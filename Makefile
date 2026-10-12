@@ -1,6 +1,6 @@
 # Build, check, install and package Agent Review.
 #
-#   make check                         format, lint, test and validate data files
+#   make check                         format, lint, test, validate data files and release notes
 #   make install PREFIX=~/.local       install for the current user (shows up in app search)
 #   sudo make install                  install system-wide into /usr/local
 #   make rpm / make deb                build a Fedora / Ubuntu package
@@ -14,7 +14,7 @@ CARGO    ?= cargo
 BINDIR   := $(DESTDIR)$(PREFIX)/bin
 DATADIR  := $(DESTDIR)$(PREFIX)/share
 
-.PHONY: all build release run test fmt fmt-check lint validate check install uninstall rpm deb clean
+.PHONY: all build release run test fmt fmt-check lint validate check-version check install uninstall rpm deb clean
 
 all: release
 
@@ -43,7 +43,11 @@ validate:
 	desktop-file-validate data/$(APP_ID).desktop
 	appstreamcli validate --no-net data/$(APP_ID).metainfo.xml
 
-check: fmt-check lint test validate
+# The current version must have CHANGELOG.md notes and an AppStream <release> entry.
+check-version:
+	scripts/check-version.sh
+
+check: fmt-check lint test validate check-version
 
 install: release
 	install -Dm755 target/release/$(BIN) $(BINDIR)/$(BIN)

@@ -1,0 +1,22 @@
+# Changelog
+
+All notable changes to Agent Review are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
+[Semantic Versioning](https://semver.org/). Each version's section becomes the
+notes of its GitHub release.
+
+## [0.1.0] - 2026-10-12
+
+### Added
+
+- Open any Git repository, or a folder inside one, and switch between recent projects.
+- Browse all, staged or unstaged uncommitted changes, including untracked files, with
+  live updates as files change.
+- Syntax highlighted diffs with old and new line numbers.
+- Inline comments on a line, a range of lines (shift-click or select and press Ctrl+M),
+  or the whole file.
+- "Reviewed" checkbox per file; checking it opens the next unreviewed file, and files
+  changed after review are flagged.
+- Copy Feedback: copies unsent comments to the clipboard as a Markdown prompt for
+  Claude Code.
+- Fedora (`.rpm`) and Ubuntu (`.deb`) packages.

@@ -66,8 +66,25 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev desktop-fi
 | `make fmt` | Format the code |
 | `make release` | Optimised build (thin LTO, stripped) |
 
-CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04 and builds `.deb` and `.rpm`
-artifacts.
+CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04 and builds the `.deb` and
+`.rpm` packages for every push and pull request.
+
+### Releasing
+
+Every change pushed to `main` comes with a version bump and a changelog entry:
+
+1. Bump `version` in `Cargo.toml` following [Semantic Versioning](https://semver.org/): patch
+   for fixes, minor for new features, major for breaking changes. Run `cargo build` so
+   `Cargo.lock` picks up the new version.
+2. Add a `## [x.y.z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` describing the
+   change (`Added`, `Changed`, `Fixed`, `Removed`).
+3. Add a matching `<release version="x.y.z" date="YYYY-MM-DD"/>` entry at the top of
+   `<releases>` in `data/io.github.ralphnajm.AgentReview.metainfo.xml`.
+4. Run `make check` (it fails if the changelog or metadata entry is missing), commit and push.
+
+When the build succeeds, CI creates the `vx.y.z` tag and a GitHub release with the packages
+attached and the changelog section as its notes. Pushing without a version bump only runs
+the checks, because that version already has a release.
 
 ### Layout
 

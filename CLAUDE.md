@@ -8,6 +8,15 @@ Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by C
 - `cargo run -- <repo path>`: run against a repository.
 - If the build dependencies live in a toolbox, run commands through `toolbox run -c <toolbox> …`.
 
+## Releasing
+
+Every change pushed to `main` must bump the version and describe the change, because CI turns each new version into a GitHub release:
+
+1. Bump `version` in `Cargo.toml` (semver: patch for fixes, minor for features, major for breaking changes) and run `cargo build` to update `Cargo.lock`.
+2. Add a `## [x.y.z] - YYYY-MM-DD` section at the top of `CHANGELOG.md`, written for users (`Added` / `Changed` / `Fixed` / `Removed`). It becomes the release notes.
+3. Add `<release version="x.y.z" date="YYYY-MM-DD"/>` at the top of `<releases>` in `data/io.github.ralphnajm.AgentReview.metainfo.xml`.
+4. `make check` verifies steps 2 and 3.
+
 ## Conventions
 
 - Keep `src/core/` free of GTK so it stays unit-testable; UI code goes in `src/ui/`.
