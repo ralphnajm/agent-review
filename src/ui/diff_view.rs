@@ -1,5 +1,6 @@
 //! Read-only, syntax highlighted rendering of one file's diff, with comment
-//! threads shown inline below the lines they refer to.
+//! threads shown inline below the lines they refer to. Comments already sent
+//! to the agent are kept out of the diff, in a history panel above it.
 //!
 //! The buffer holds the diff lines without their `+`/`-` prefixes so the
 //! file's language highlighting applies; old/new line numbers and the change
@@ -106,12 +107,23 @@ struct Search {
     context: sourceview5::SearchContext,
 }
 
+/// Comments from earlier rounds: those already sent to the agent.
+struct History {
+    button: gtk::ToggleButton,
+    count: gtk::Label,
+    revealer: gtk::Revealer,
+    /// The heading and the cards, lined up with the code.
+    content: gtk::Box,
+    list: gtk::Box,
+}
+
 #[derive(Clone)]
 pub struct DiffView(Rc<Inner>);
 
 struct Inner {
     root: gtk::Box,
     search: Search,
+    history: History,
     overlay: gtk::Overlay,
     scrolled: gtk::ScrolledWindow,
     view: sourceview5::View,
@@ -160,8 +172,10 @@ impl DiffView {
         composer.root.set_visible(false);
         overlay.add_overlay(&composer.root);
         let search = build_search(&buffer);
+        let history = build_history();
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.append(&search.bar);
+        root.append(&history.revealer);
         root.append(&overlay);
 
         let gutter = sourceview5::GutterRendererText::new();
@@ -172,6 +186,7 @@ impl DiffView {
         let this = Self(Rc::new(Inner {
             root,
             search,
+            history,
             overlay,
             scrolled,
             view,
@@ -198,11 +213,21 @@ impl DiffView {
         this.connect_signals();
         this.connect_composer();
         this.connect_search();
+        let history = &this.0.history;
+        let (revealer, list) = (history.revealer.clone(), history.list.clone());
+        history.button.connect_toggled(move |button| {
+            revealer.set_reveal_child(button.is_active() && list.first_child().is_some());
+        });
         this
     }
 
     pub fn widget(&self) -> &gtk::Box {
         &self.0.root
+    }
+
+    /// Shows and hides the history of sent comments; for the file header.
+    pub fn history_button(&self) -> &gtk::ToggleButton {
+        &self.0.history.button
     }
 
     /// Called when a comment is written: on the anchored lines, or the file for `None`.
@@ -532,7 +557,10 @@ impl DiffView {
             for child in inner.children.borrow().iter() {
                 child.set_width_request(width);
             }
+            inner.history.content.set_width_request(width);
         }
+        // History cards line up with the inline ones.
+        inner.history.content.set_margin_start(gutter_width + inner.view.left_margin());
 
         // Reserve room for the composer below (or above) its line.
         let composer = &inner.composer.root;
@@ -716,6 +744,7 @@ impl DiffView {
         self.0.rows.borrow_mut().clear();
         self.0.diff.replace(None);
         self.0.notes.borrow_mut().clear();
+        self.show_history(&[]);
     }
 
     /// Forgets what is shown, so the next `show` re-renders.
@@ -729,10 +758,14 @@ impl DiffView {
         let notes = self.0.notes.borrow();
         let target = self.0.target.borrow().clone();
 
-        // Group notes by the line they follow; outdated and file notes go on top.
+        // Group notes by the line they follow; outdated and file notes go on
+        // top. Notes already sent belong to the history instead.
+        let (sent, unsent): (Vec<&Note>, Vec<&Note>) = notes.iter().partition(|n| n.sent_at.is_some());
+        let now = crate::core::now();
+        let history: Vec<gtk::Box> = sent.iter().map(|note| self.build_card(note, diff, now, true)).collect();
         let mut by_line: BTreeMap<usize, Vec<&Note>> = BTreeMap::new();
         let mut top: Vec<&Note> = Vec::new();
-        for note in notes.iter() {
+        for note in unsent {
             let end = note
                 .anchor
                 .as_ref()
@@ -833,7 +866,22 @@ impl DiffView {
             self.0.view.add_child_at_anchor(child, &anchor);
         }
         self.0.children.replace(children);
+        self.show_history(&history);
         self.relayout();
+    }
+
+    /// Puts `cards` in the history panel, offering the button only if there are any.
+    fn show_history(&self, cards: &[gtk::Box]) {
+        let history = &self.0.history;
+        while let Some(child) = history.list.first_child() {
+            history.list.remove(&child);
+        }
+        for card in cards {
+            history.list.append(card);
+        }
+        history.count.set_text(&cards.len().to_string());
+        history.button.set_visible(!cards.is_empty());
+        history.revealer.set_reveal_child(history.button.is_active() && !cards.is_empty());
     }
 
     /// Brings the buffer to `text`, one line per row, rewriting only the lines
@@ -1105,17 +1153,16 @@ impl DiffView {
         }
         let now = crate::core::now();
         for note in notes {
-            thread.append(&self.build_card(note, diff, now));
+            thread.append(&self.build_card(note, diff, now, false));
         }
         thread
     }
 
-    fn build_card(&self, note: &Note, diff: &FileDiff, now: i64) -> gtk::Box {
+    /// A comment's card. History cards quote the lines they were about, which
+    /// inline cards only do once those lines have changed.
+    fn build_card(&self, note: &Note, diff: &FileDiff, now: i64, history: bool) -> gtk::Box {
         let card = gtk::Box::new(gtk::Orientation::Vertical, 4);
         card.add_css_class("comment-card");
-        if note.sent_at.is_some() {
-            card.add_css_class("sent");
-        }
         let outdated = note.anchor.as_ref().filter(|a| !a.is_current(Some(diff)));
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -1125,13 +1172,11 @@ impl DiffView {
             (None, _) => "File".to_owned(),
         };
         header.append(&util::label(&target, &["comment-target"]));
-        header.append(&util::label(&util::relative_time(note.created_at, now), &["comment-meta"]));
-        if note.sent_at.is_some() {
-            let sent = util::label("Sent", &["chip"]);
-            sent.set_tooltip_text(Some("Included in feedback you copied or sent"));
-            sent.set_valign(gtk::Align::Center);
-            header.append(&sent);
-        }
+        let time = match note.sent_at {
+            Some(sent) => format!("sent {}", util::relative_time(sent, now)),
+            None => util::relative_time(note.created_at, now),
+        };
+        header.append(&util::label(&time, &["comment-meta"]));
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         header.append(&spacer);
@@ -1158,7 +1203,7 @@ impl DiffView {
         header.append(&delete);
         card.append(&header);
 
-        if let Some(anchor) = outdated {
+        if let Some(anchor) = note.anchor.as_ref().filter(|_| history || outdated.is_some()) {
             let quote = util::label(&anchor.text, &["comment-quote"]);
             quote.set_wrap(true);
             card.append(&quote);
@@ -1222,6 +1267,42 @@ fn build_composer() -> Composer {
     root.append(&overlay);
     root.append(&actions);
     Composer { root, title, text, cancel, submit }
+}
+
+fn build_history() -> History {
+    let count = gtk::Label::new(None);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    content.append(&gtk::Image::from_icon_name("document-open-recent-symbolic"));
+    content.append(&count);
+    let button = gtk::ToggleButton::builder()
+        .child(&content)
+        .tooltip_text("Previous Comments")
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .build();
+    button.add_css_class("flat");
+    button.add_css_class("history-button");
+
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    heading.append(&util::label("Previous comments", &["comment-target"]));
+    heading.append(&util::label("Already sent to the agent, for reference", &["comment-meta"]));
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.set_halign(gtk::Align::Start);
+    content.set_margin_top(10);
+    content.set_margin_bottom(12);
+    content.append(&heading);
+    content.append(&list);
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .max_content_height(320)
+        .propagate_natural_height(true)
+        .child(&content)
+        .build();
+    scroller.add_css_class("comment-history");
+    let revealer =
+        gtk::Revealer::builder().child(&scroller).transition_type(gtk::RevealerTransitionType::SlideDown).build();
+    History { button, count, revealer, content, list }
 }
 
 fn build_search(buffer: &sourceview5::Buffer) -> Search {

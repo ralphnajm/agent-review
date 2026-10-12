@@ -5,6 +5,14 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.4.0] - 2026-10-12
+
+### Changed
+
+- Comments already sent to the agent no longer appear in the diff. A button next to the file
+  name shows how many there are and opens them above the diff, with the lines they were
+  about, for reference.
+
 ## [0.3.0] - 2026-10-12
 
 ### Added

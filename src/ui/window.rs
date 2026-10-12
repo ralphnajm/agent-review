@@ -1015,6 +1015,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         button.add_css_class("flat");
         button.add_css_class("small-button");
     }
+    let diff = DiffView::new();
     let file_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     file_header.add_css_class("file-header");
     file_header.append(&reviewed);
@@ -1022,12 +1023,11 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     file_header.append(&file_dir);
     file_header.append(&file_name);
     file_header.append(&file_comment);
+    file_header.append(diff.history_button());
     file_header.append(&file_meta);
     file_header.append(&stale_chip);
     file_header.append(&prev);
     file_header.append(&next);
-
-    let diff = DiffView::new();
 
     let open_button =
         gtk::Button::builder().label("Open Folder…").halign(gtk::Align::Center).action_name("win.open-folder").build();

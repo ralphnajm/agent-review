@@ -21,6 +21,8 @@ links against the GTK libraries that Fedora and Ubuntu already ship.
   - Or select lines in the code and press Ctrl+M.
   - Use the icon next to the file name to comment on the whole file.
   - Comments appear inline, under the lines they refer to.
+  - Comments already sent to the agent leave the diff. The clock button next to the file name
+    shows how many there are and opens them above the diff for reference.
 - **Reviewed checkbox:** tick the box next to the file name (Ctrl+Shift+A) to mark the file
   done; the next unreviewed file opens and the file list shows it as checked. Commenting on a
   file also marks it reviewed. If the file changes afterwards, it is flagged for another look.
