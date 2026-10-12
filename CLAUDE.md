@@ -1,4 +1,4 @@
-# Claude Review
+# Agent Review
 
 Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by Claude Code. See README.md.
 
@@ -6,7 +6,7 @@ Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by C
 
 - `make check`: fmt check, clippy `-D warnings` (pedantic), tests, desktop/AppStream validation. Run before finishing any change.
 - `cargo run -- <repo path>`: run against a repository.
-- Build deps may live in a toolbox: `toolbox run -c claude-review make check`.
+- If the build dependencies live in a toolbox, run commands through `toolbox run -c <toolbox> …`.
 
 ## Conventions
 

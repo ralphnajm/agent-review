@@ -1,4 +1,4 @@
-# Claude Review
+# Agent Review
 
 A native Linux desktop app for reviewing the changes Claude Code makes to your projects.
 Comment on lines and files, mark files as reviewed, and copy the feedback to paste back into
@@ -26,7 +26,7 @@ links against the GTK libraries that Fedora and Ubuntu already ship.
   Markdown prompt, ready to paste into Claude Code, and marks them as sent. The toast lets you
   mark them unsent again.
 
-Review state lives in `~/.local/share/claude-review/`, never inside the repository.
+Review state lives in `~/.local/share/agent-review/`, never inside the repository.
 
 ## Install
 
@@ -34,7 +34,7 @@ Runtime requirements: GTK ≥ 4.14, libadwaita ≥ 1.5, GtkSourceView ≥ 5.12 a
 available on Fedora 40+ and Ubuntu 24.04+.
 
 ```sh
-make install PREFIX=~/.local    # just for you; "Claude Review" then shows up in app search
+make install PREFIX=~/.local    # just for you; "Agent Review" then shows up in app search
 sudo make install               # system-wide, into /usr/local
 ```
 
@@ -45,7 +45,7 @@ cargo install cargo-generate-rpm && make rpm   # target/generate-rpm/*.rpm
 cargo install cargo-deb && make deb            # target/debian/*.deb
 ```
 
-You can also open a project straight from a terminal: `claude-review path/to/repo`.
+You can also open a project straight from a terminal: `agent-review path/to/repo`.
 
 ## Development
 
@@ -87,6 +87,3 @@ src/
     file_list.rs, project_switcher.rs
 data/           desktop entry, AppStream metadata, icons
 ```
-
-The application ID `io.github.claude_review.ClaudeReview` is a placeholder. Change it in
-`src/config.rs`, `data/`, `Cargo.toml` and `Makefile` before publishing.

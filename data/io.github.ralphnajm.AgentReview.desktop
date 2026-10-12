@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Claude Review
+Name=Agent Review
 GenericName=Code Review
 Comment=Review the changes Claude Code makes and send your notes back to it
-Exec=claude-review %F
-Icon=io.github.claude_review.ClaudeReview
+Exec=agent-review %F
+Icon=io.github.ralphnajm.AgentReview
 Terminal=false
 Categories=Development;RevisionControl;GTK;
 Keywords=git;diff;review;claude;ai;code;changes;

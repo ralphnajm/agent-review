@@ -1,4 +1,4 @@
-//! Claude Review: a native desktop app for reviewing the uncommitted changes
+//! Agent Review: a native desktop app for reviewing the uncommitted changes
 //! Claude Code makes, and handing review notes back to it.
 
 mod application;

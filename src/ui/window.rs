@@ -84,7 +84,7 @@ impl Project {
 
     fn save_review(&self) {
         if let Err(err) = store::save_review(&self.repo.path(), &self.review) {
-            eprintln!("claude-review: could not save review: {err}");
+            eprintln!("agent-review: could not save review: {err}");
         }
     }
 }
@@ -138,7 +138,7 @@ impl Window {
 
     fn save_settings(&self) {
         if let Err(err) = self.0.state.borrow().settings.save() {
-            eprintln!("claude-review: could not save settings: {err}");
+            eprintln!("agent-review: could not save settings: {err}");
         }
     }
 
@@ -904,7 +904,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
     section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
-    section.append(Some("About Claude Review"), Some("app.about"));
+    section.append(Some("About Agent Review"), Some("app.about"));
     main_menu.append_section(None, &section);
     let menu_button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")

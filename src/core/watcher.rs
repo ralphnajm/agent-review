@@ -39,7 +39,7 @@ pub fn watch(repo: Repo, on_change: impl Fn() + Send + 'static) -> WatchHandle {
         .name("repo-watcher".into())
         .spawn(move || {
             if let Err(err) = run(&repo, &stop, &on_change) {
-                eprintln!("claude-review: file watching disabled: {err}");
+                eprintln!("agent-review: file watching disabled: {err}");
             }
         })
         .ok();

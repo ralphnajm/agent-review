@@ -1,12 +1,12 @@
-# Build, check, install and package Claude Review.
+# Build, check, install and package Agent Review.
 #
 #   make check                         format, lint, test and validate data files
 #   make install PREFIX=~/.local       install for the current user (shows up in app search)
 #   sudo make install                  install system-wide into /usr/local
 #   make rpm / make deb                build a Fedora / Ubuntu package
 
-APP_ID   := io.github.claude_review.ClaudeReview
-BIN      := claude-review
+APP_ID   := io.github.ralphnajm.AgentReview
+BIN      := agent-review
 PREFIX   ?= /usr/local
 DESTDIR  ?=
 CARGO    ?= cargo

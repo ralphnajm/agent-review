@@ -3,6 +3,21 @@
 version = 4
 
 [[package]]
+name = "agent-review"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "gtk4",
+ "libadwaita",
+ "notify",
+ "serde",
+ "serde_json",
+ "sourceview5",
+ "tempfile",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -70,21 +85,6 @@ name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
-
-[[package]]
-name = "claude-review"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-channel",
- "gtk4",
- "libadwaita",
- "notify",
- "serde",
- "serde_json",
- "sourceview5",
- "tempfile",
-]
 
 [[package]]
 name = "concurrent-queue"

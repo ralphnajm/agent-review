@@ -1,5 +1,5 @@
 [package]
-name = "claude-review"
+name = "agent-review"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
@@ -54,28 +54,28 @@ print_stdout = "warn"
 # Packaging: `cargo deb` (Debian/Ubuntu) and `cargo generate-rpm` (Fedora).
 # Both expect `cargo build --release` to have run first.
 [package.metadata.deb]
-name = "claude-review"
-maintainer = "Claude Review contributors"
+name = "agent-review"
+maintainer = "Ralph Najem <me@ralphnajem.com>"
 section = "devel"
 priority = "optional"
 depends = "$auto, git"
 extended-description = "A native GTK app for reviewing the uncommitted changes Claude Code makes: browse staged and unstaged changes per project, approve files, leave line notes and hand the feedback back to Claude Code."
 assets = [
-    ["target/release/claude-review", "usr/bin/", "755"],
-    ["data/io.github.claude_review.ClaudeReview.desktop", "usr/share/applications/", "644"],
-    ["data/io.github.claude_review.ClaudeReview.metainfo.xml", "usr/share/metainfo/", "644"],
-    ["data/icons/hicolor/scalable/apps/io.github.claude_review.ClaudeReview.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["data/icons/hicolor/symbolic/apps/io.github.claude_review.ClaudeReview-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
+    ["target/release/agent-review", "usr/bin/", "755"],
+    ["data/io.github.ralphnajm.AgentReview.desktop", "usr/share/applications/", "644"],
+    ["data/io.github.ralphnajm.AgentReview.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["data/icons/hicolor/scalable/apps/io.github.ralphnajm.AgentReview.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["data/icons/hicolor/symbolic/apps/io.github.ralphnajm.AgentReview-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
 ]
 
 [package.metadata.generate-rpm]
 summary = "Review the changes Claude Code makes"
 assets = [
-    { source = "target/release/claude-review", dest = "/usr/bin/claude-review", mode = "755" },
-    { source = "data/io.github.claude_review.ClaudeReview.desktop", dest = "/usr/share/applications/io.github.claude_review.ClaudeReview.desktop", mode = "644" },
-    { source = "data/io.github.claude_review.ClaudeReview.metainfo.xml", dest = "/usr/share/metainfo/io.github.claude_review.ClaudeReview.metainfo.xml", mode = "644" },
-    { source = "data/icons/hicolor/scalable/apps/io.github.claude_review.ClaudeReview.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.claude_review.ClaudeReview.svg", mode = "644" },
-    { source = "data/icons/hicolor/symbolic/apps/io.github.claude_review.ClaudeReview-symbolic.svg", dest = "/usr/share/icons/hicolor/symbolic/apps/io.github.claude_review.ClaudeReview-symbolic.svg", mode = "644" },
+    { source = "target/release/agent-review", dest = "/usr/bin/agent-review", mode = "755" },
+    { source = "data/io.github.ralphnajm.AgentReview.desktop", dest = "/usr/share/applications/io.github.ralphnajm.AgentReview.desktop", mode = "644" },
+    { source = "data/io.github.ralphnajm.AgentReview.metainfo.xml", dest = "/usr/share/metainfo/io.github.ralphnajm.AgentReview.metainfo.xml", mode = "644" },
+    { source = "data/icons/hicolor/scalable/apps/io.github.ralphnajm.AgentReview.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.ralphnajm.AgentReview.svg", mode = "644" },
+    { source = "data/icons/hicolor/symbolic/apps/io.github.ralphnajm.AgentReview-symbolic.svg", dest = "/usr/share/icons/hicolor/symbolic/apps/io.github.ralphnajm.AgentReview-symbolic.svg", mode = "644" },
 ]
 auto-req = "auto"
 

@@ -38,7 +38,7 @@ jobs:
       - run: make deb
       - uses: actions/upload-artifact@v4
         with:
-          name: claude-review-deb
+          name: agent-review-deb
           path: target/debian/*.deb
 
   rpm:
@@ -55,5 +55,5 @@ jobs:
       - run: make rpm
       - uses: actions/upload-artifact@v4
         with:
-          name: claude-review-rpm
+          name: agent-review-rpm
           path: target/generate-rpm/*.rpm

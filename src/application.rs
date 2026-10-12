@@ -23,7 +23,7 @@ pub fn run() -> glib::ExitCode {
         setup_actions(app);
     });
     app.connect_activate(|app| window(app).present());
-    // `claude-review <folder>` opens that folder, in the running instance if any.
+    // `agent-review <folder>` opens that folder, in the running instance if any.
     app.connect_open(|app, files, _| {
         let window = window(app);
         if let Some(path) = files.first().and_then(FileExt::path) {

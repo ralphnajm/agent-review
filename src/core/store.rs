@@ -11,7 +11,7 @@ use crate::core::hash;
 use crate::core::review::ReviewState;
 use crate::core::status::DiffMode;
 
-const APP_DIR: &str = "claude-review";
+const APP_DIR: &str = "agent-review";
 const MAX_RECENT_PROJECTS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
