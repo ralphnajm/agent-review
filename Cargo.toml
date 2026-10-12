@@ -1,9 +1,9 @@
 [package]
 name = "agent-review"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.99"
-description = "Review the changes Claude Code makes and send your notes back to it"
+description = "Review the changes Claude Code makes and copy your feedback back to it"
 license = "MIT"
 repository = "https://github.com/ralphnajm/agent-review"
 readme = "README.md"
@@ -59,7 +59,7 @@ maintainer = "Ralph Najem <me@ralphnajem.com>"
 section = "devel"
 priority = "optional"
 depends = "$auto, git"
-extended-description = "A native GTK app for reviewing the uncommitted changes Claude Code makes: browse staged and unstaged changes per project, approve files, leave line notes and hand the feedback back to Claude Code."
+extended-description = "A native GTK app for reviewing the uncommitted changes Claude Code makes: browse staged and unstaged changes per project, comment on lines and files, mark files as reviewed, and copy the feedback to paste into Claude Code."
 assets = [
     ["target/release/agent-review", "usr/bin/", "755"],
     ["data/io.github.ralphnajm.AgentReview.desktop", "usr/share/applications/", "644"],
@@ -77,7 +77,8 @@ assets = [
     { source = "data/icons/hicolor/scalable/apps/io.github.ralphnajm.AgentReview.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.ralphnajm.AgentReview.svg", mode = "644" },
     { source = "data/icons/hicolor/symbolic/apps/io.github.ralphnajm.AgentReview-symbolic.svg", dest = "/usr/share/icons/hicolor/symbolic/apps/io.github.ralphnajm.AgentReview-symbolic.svg", mode = "644" },
 ]
-auto-req = "auto"
+# Use rpm-build's find-requires: the built-in scanner emits glibc requirements dnf cannot resolve.
+auto-req = "find-requires"
 
 [package.metadata.generate-rpm.requires]
 git = "*"

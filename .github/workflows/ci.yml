@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-24.04
     container: fedora:44
     steps:
-      - run: dnf install -y git make gcc rustup gtk4-devel libadwaita-devel gtksourceview5-devel
+      - run: dnf install -y git make gcc rustup rpm-build gtk4-devel libadwaita-devel gtksourceview5-devel
       - run: rustup-init -y --profile minimal --default-toolchain none
       - uses: actions/checkout@v5
       - run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

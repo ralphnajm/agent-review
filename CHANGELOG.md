@@ -5,6 +5,14 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.1.1] - 2026-10-12
+
+### Fixed
+
+- The Fedora package can be installed: its glibc requirements were malformed and dnf could
+  not resolve them.
+- Package descriptions match what the app does.
+
 ## [0.1.0] - 2026-10-12
 
 ### Added
