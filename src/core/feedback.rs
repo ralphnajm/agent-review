@@ -1,4 +1,4 @@
-//! Turns review notes into a Markdown prompt for Claude Code.
+//! Turns review notes into a Markdown prompt for a coding agent.
 
 use std::fmt::Write as _;
 

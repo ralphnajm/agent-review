@@ -1,6 +1,6 @@
 # Agent Review
 
-Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by Claude Code. See README.md.
+Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by coding agents. See README.md.
 
 ## Commands
 
@@ -20,7 +20,7 @@ Every change pushed to `main` must bump the version and describe the change, bec
 ## Conventions
 
 - Keep `src/core/` free of GTK so it stays unit-testable; UI code goes in `src/ui/`.
-- Feedback goes to Claude Code only via the clipboard: no terminal launching or session integration.
+- Feedback goes to the agent only via the clipboard: no terminal launching or agent-specific integration. Keep user-facing text agent-neutral.
 - Git is accessed through the `git` CLI with `--no-optional-locks` so refreshes never touch the index (which would retrigger the watcher).
 - Review state is stored under XDG data dirs, never in the reviewed repository.
 - Target GTK 4.14 / libadwaita 1.5 / GtkSourceView 5.12 (Ubuntu 24.04); don't enable newer feature flags.

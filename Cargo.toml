@@ -1,13 +1,13 @@
 [package]
 name = "agent-review"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.99"
-description = "Review the changes Claude Code makes and copy your feedback back to it"
+description = "Review the changes coding agents make and copy your feedback back to them"
 license = "MIT"
 repository = "https://github.com/ralphnajm/agent-review"
 readme = "README.md"
-keywords = ["git", "review", "claude", "gtk", "diff"]
+keywords = ["git", "review", "agent", "gtk", "diff"]
 categories = ["development-tools"]
 publish = false
 
@@ -59,7 +59,7 @@ maintainer = "Ralph Najem <me@ralphnajem.com>"
 section = "devel"
 priority = "optional"
 depends = "$auto, git"
-extended-description = "A native GTK app for reviewing the uncommitted changes Claude Code makes: browse staged and unstaged changes per project, comment on lines and files, mark files as reviewed, and copy the feedback to paste into Claude Code."
+extended-description = "A native GTK app for reviewing the uncommitted changes coding agents make: browse staged and unstaged changes per project, comment on lines and files, mark files as reviewed, and copy the feedback to paste into your agent."
 assets = [
     ["target/release/agent-review", "usr/bin/", "755"],
     ["data/io.github.ralphnajm.AgentReview.desktop", "usr/share/applications/", "644"],
@@ -69,7 +69,7 @@ assets = [
 ]
 
 [package.metadata.generate-rpm]
-summary = "Review the changes Claude Code makes"
+summary = "Review the changes coding agents make"
 assets = [
     { source = "target/release/agent-review", dest = "/usr/bin/agent-review", mode = "755" },
     { source = "data/io.github.ralphnajm.AgentReview.desktop", dest = "/usr/share/applications/io.github.ralphnajm.AgentReview.desktop", mode = "644" },

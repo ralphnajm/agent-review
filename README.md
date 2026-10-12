@@ -1,8 +1,8 @@
 # Agent Review
 
-A native Linux desktop app for reviewing the changes Claude Code makes to your projects.
+A native Linux desktop app for reviewing the changes AI coding agents make to your projects.
 Comment on lines and files, mark files as reviewed, and copy the feedback to paste back into
-Claude Code.
+your agent.
 
 Built with Rust, GTK 4 and libadwaita (no web view). The release binary is about 1 MB and
 links against the GTK libraries that Fedora and Ubuntu already ship.
@@ -12,7 +12,7 @@ links against the GTK libraries that Fedora and Ubuntu already ship.
 - **Projects:** open any Git repository (or a sub-folder of one) and switch between recent
   projects at any time (Ctrl+P).
 - **Changes:** browse all uncommitted changes, or only staged or only unstaged ones. Untracked
-  files count as new. The view updates live as Claude edits files.
+  files count as new. The view updates live as the agent edits files.
 - **Diffs:** syntax highlighted, with old and new line numbers.
 - **Comments:**
   - Click a line number to comment on that line, or shift-click to extend to a range.
@@ -23,7 +23,7 @@ links against the GTK libraries that Fedora and Ubuntu already ship.
   done; the next unreviewed file opens and the file list shows it as checked. Commenting on a
   file also marks it reviewed. If the file changes afterwards, it is flagged for another look.
 - **Feedback:** *Copy Feedback* (Ctrl+Shift+C) puts all unsent comments on the clipboard as a
-  Markdown prompt, ready to paste into Claude Code, and marks them as sent. The toast lets you
+  Markdown prompt, ready to paste into your agent, and marks them as sent. The toast lets you
   mark them unsent again.
 
 Review state lives in `~/.local/share/agent-review/`, never inside the repository.

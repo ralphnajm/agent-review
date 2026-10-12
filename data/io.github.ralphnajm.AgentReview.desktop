@@ -2,11 +2,11 @@
 Type=Application
 Name=Agent Review
 GenericName=Code Review
-Comment=Review the changes Claude Code makes and send your notes back to it
+Comment=Review the changes coding agents make and copy your feedback back to them
 Exec=agent-review %F
 Icon=io.github.ralphnajm.AgentReview
 Terminal=false
 Categories=Development;RevisionControl;GTK;
-Keywords=git;diff;review;claude;ai;code;changes;
+Keywords=git;diff;review;agent;ai;code;changes;
 StartupNotify=true
 DBusActivatable=false

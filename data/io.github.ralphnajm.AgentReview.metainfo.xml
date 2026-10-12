@@ -4,19 +4,19 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>Agent Review</name>
-  <summary>Review the changes Claude Code makes</summary>
+  <summary>Review the changes coding agents make</summary>
   <description>
     <p>
-      Agent Review shows the uncommitted changes in your Git projects while Claude Code works on
+      Agent Review shows the uncommitted changes in your Git projects while a coding agent works on
       them. Mark files as reviewed, comment on specific lines, and copy the feedback to paste back
-      into Claude Code.
+      into the agent.
     </p>
     <ul>
       <li>Switch between projects at any time</li>
       <li>Browse all, staged or unstaged changes with syntax highlighting</li>
       <li>Updates live as files change</li>
       <li>Reviewed files are flagged when they change afterwards</li>
-      <li>Copy your feedback as Markdown, ready to paste into Claude Code</li>
+      <li>Copy your feedback as Markdown, ready to paste into your agent</li>
     </ul>
   </description>
   <launchable type="desktop-id">io.github.ralphnajm.AgentReview.desktop</launchable>
@@ -36,6 +36,7 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.1.2" date="2026-10-12"/>
     <release version="0.1.1" date="2026-10-12"/>
     <release version="0.1.0" date="2026-10-12">
       <description>

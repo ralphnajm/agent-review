@@ -601,7 +601,7 @@ impl Window {
                 w.content_stack.set_visible_child_name("loading");
             } else if project.visible_entries(mode).next().is_none() {
                 let (title, description) = match mode {
-                    DiffMode::All => ("No Changes", "Nothing to review yet. Changes appear here as Claude works."),
+                    DiffMode::All => ("No Changes", "Nothing to review yet. Changes appear here as your agent works."),
                     DiffMode::Staged => ("No Staged Changes", "Nothing has been staged yet."),
                     DiffMode::Unstaged => ("No Unstaged Changes", "Every change is staged."),
                 };
@@ -813,7 +813,7 @@ impl Window {
         }
         self.render();
 
-        let toast = adw::Toast::builder().title("Feedback copied. Paste it into Claude Code").timeout(5).build();
+        let toast = adw::Toast::builder().title("Feedback copied. Paste it into your agent").timeout(5).build();
         if !ids.is_empty() {
             toast.set_button_label(Some("Mark Unsent"));
             let weak = self.weak();
@@ -883,7 +883,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     copy_content.append(&copy_count);
     let copy_button = gtk::Button::builder()
         .child(&copy_content)
-        .tooltip_text("Copy unsent comments as a prompt for Claude Code (Ctrl+Shift+C)")
+        .tooltip_text("Copy unsent comments as a prompt for your agent (Ctrl+Shift+C)")
         .action_name("win.copy-feedback")
         .build();
     copy_button.add_css_class("suggested-action");
@@ -1032,10 +1032,10 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     open_button.add_css_class("suggested-action");
     let welcome = adw::StatusPage::builder()
         .icon_name(config::APP_ID)
-        .title("Review Claude's Changes")
+        .title("Review Your Agent's Changes")
         .description(
             "Open a Git repository to review its uncommitted changes, comment on lines, and send the feedback \
-             back to Claude Code.",
+             back to your coding agent.",
         )
         .child(&open_button)
         .build();

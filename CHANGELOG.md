@@ -5,6 +5,13 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.1.2] - 2026-10-12
+
+### Changed
+
+- Wording no longer mentions Claude: Agent Review works with any coding agent, and the
+  copied feedback can be pasted into whichever one you use.
+
 ## [0.1.1] - 2026-10-12
 
 ### Fixed

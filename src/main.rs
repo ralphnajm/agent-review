@@ -1,5 +1,5 @@
 //! Agent Review: a native desktop app for reviewing the uncommitted changes
-//! Claude Code makes, and handing review notes back to it.
+//! coding agents make, and handing review notes back to them.
 
 mod application;
 mod config;
