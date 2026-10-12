@@ -449,6 +449,6 @@ new mode 100755
         assert_eq!(diff.additions, 2);
         assert_eq!(diff.hunks[0].header, "@@ -0,0 +1,2 @@");
         assert!(untracked("blob", b"\x00\x01").is_binary);
-        assert!(untracked("empty", b"").hunks.is_empty());
+        assert_eq!(untracked("empty", b"").hunks, Vec::new());
     }
 }
