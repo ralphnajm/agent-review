@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Review
+GenericName=Code Review
+Comment=Review the changes Claude Code makes and send your notes back to it
+Exec=claude-review %F
+Icon=io.github.claude_review.ClaudeReview
+Terminal=false
+Categories=Development;RevisionControl;GTK;
+Keywords=git;diff;review;claude;ai;code;changes;
+StartupNotify=true
+DBusActivatable=false

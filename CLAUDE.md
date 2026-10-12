@@ -1,0 +1,18 @@
+# Claude Review
+
+Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by Claude Code. See README.md.
+
+## Commands
+
+- `make check`: fmt check, clippy `-D warnings` (pedantic), tests, desktop/AppStream validation. Run before finishing any change.
+- `cargo run -- <repo path>`: run against a repository.
+- Build deps may live in a toolbox: `toolbox run -c claude-review make check`.
+
+## Conventions
+
+- Keep `src/core/` free of GTK so it stays unit-testable; UI code goes in `src/ui/`.
+- Feedback goes to Claude Code only via the clipboard: no terminal launching or session integration.
+- Git is accessed through the `git` CLI with `--no-optional-locks` so refreshes never touch the index (which would retrigger the watcher).
+- Review state is stored under XDG data dirs, never in the reviewed repository.
+- Target GTK 4.14 / libadwaita 1.5 / GtkSourceView 5.12 (Ubuntu 24.04); don't enable newer feature flags.
+- The UI follows a compact, flat style: one top bar with review state and actions on the right, file panel on the left, comments inline in the diff.

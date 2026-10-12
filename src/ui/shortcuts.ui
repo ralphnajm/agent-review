@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkShortcutsWindow" id="help_overlay">
+    <property name="modal">true</property>
+    <child>
+      <object class="GtkShortcutsSection">
+        <property name="section-name">shortcuts</property>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Projects</property>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Open folder</property><property name="accelerator">&lt;Control&gt;o</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Switch project</property><property name="accelerator">&lt;Control&gt;p</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Refresh</property><property name="accelerator">&lt;Control&gt;r</property></object></child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Files</property>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Next file</property><property name="accelerator">&lt;Alt&gt;Down</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Previous file</property><property name="accelerator">&lt;Alt&gt;Up</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Filter files</property><property name="accelerator">&lt;Control&gt;f</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">All, staged or unstaged changes</property><property name="accelerator">&lt;Alt&gt;1 &lt;Alt&gt;2 &lt;Alt&gt;3</property></object></child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Review</property>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Mark the file reviewed and open the next one</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;a</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Comment on the selected lines (or the file)</property><property name="accelerator">&lt;Control&gt;m</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Post the comment</property><property name="accelerator">&lt;Control&gt;Return</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Show or hide the file panel</property><property name="accelerator">&lt;Control&gt;b</property></object></child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">Feedback</property>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Copy feedback</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;c</property></object></child>
+          </object>
+        </child>
+        <child>
+          <object class="GtkShortcutsGroup">
+            <property name="title">General</property>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Keyboard shortcuts</property><property name="accelerator">&lt;Control&gt;question</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Close window</property><property name="accelerator">&lt;Control&gt;w</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Quit</property><property name="accelerator">&lt;Control&gt;q</property></object></child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>

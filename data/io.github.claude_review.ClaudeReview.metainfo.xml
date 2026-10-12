@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.claude_review.ClaudeReview</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Claude Review</name>
+  <summary>Review the changes Claude Code makes</summary>
+  <description>
+    <p>
+      Claude Review shows the uncommitted changes in your Git projects while Claude Code works on
+      them. Mark files as reviewed, comment on specific lines, and copy the feedback to paste back
+      into Claude Code.
+    </p>
+    <ul>
+      <li>Switch between projects at any time</li>
+      <li>Browse all, staged or unstaged changes with syntax highlighting</li>
+      <li>Updates live as files change</li>
+      <li>Reviewed files are flagged when they change afterwards</li>
+      <li>Copy your feedback as Markdown, ready to paste into Claude Code</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.claude_review.ClaudeReview.desktop</launchable>
+  <provides>
+    <binary>claude-review</binary>
+  </provides>
+  <url type="homepage">https://github.com/ralphnajm/agent-review</url>
+  <developer id="io.github.claude_review">
+    <name>Claude Review contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-10-12">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

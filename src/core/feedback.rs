@@ -1,0 +1,248 @@
+//! Turns review notes into a Markdown prompt for Claude Code.
+
+use std::fmt::Write as _;
+
+use crate::core::diff::FileDiff;
+use crate::core::review::{ApprovalState, Note, ReviewState};
+
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// Free-form text placed before the per-file notes.
+    pub summary: String,
+    /// Also include notes that were already copied or sent.
+    pub include_sent: bool,
+    /// List the files that were approved.
+    pub list_approved: bool,
+}
+
+/// A file currently under review.
+#[derive(Debug, Clone, Copy)]
+pub struct FileInfo<'a> {
+    pub path: &'a str,
+    pub diff: Option<&'a FileDiff>,
+    pub approval: ApprovalState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Feedback {
+    pub text: String,
+    /// Notes included in `text`, to be marked as sent.
+    pub note_ids: Vec<u64>,
+    pub files_with_notes: usize,
+    pub approved: usize,
+}
+
+impl Feedback {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+const MAX_QUOTE_CHARS: usize = 120;
+
+pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) -> Feedback {
+    let mut feedback = Feedback::default();
+    let mut sections = String::new();
+
+    let wanted = |note: &&Note| options.include_sent || note.sent_at.is_none();
+
+    // Files under review first, in list order; then notes on files that are
+    // no longer changed (e.g. reverted or committed) so nothing gets lost.
+    let mut ordered: Vec<(&str, Option<&FileDiff>, bool)> = files.iter().map(|f| (f.path, f.diff, true)).collect();
+    for path in review.files.keys() {
+        if !files.iter().any(|f| f.path == path) {
+            ordered.push((path, None, false));
+        }
+    }
+
+    for (path, diff, current) in ordered {
+        let notes: Vec<&Note> = review.notes(path).iter().filter(wanted).collect();
+        if notes.is_empty() {
+            continue;
+        }
+        feedback.files_with_notes += 1;
+        let suffix = if current { "" } else { " (no longer changed)" };
+        let _ = writeln!(sections, "## `{path}`{suffix}\n");
+        for note in notes {
+            feedback.note_ids.push(note.id);
+            write_note(&mut sections, note, diff);
+        }
+        sections.push('\n');
+    }
+
+    // Reviewed files with comments are covered above; the rest need no changes.
+    let approved: Vec<&str> = files
+        .iter()
+        .filter(|f| f.approval == ApprovalState::Approved && !review.notes(f.path).iter().any(|n| wanted(&n)))
+        .map(|f| f.path)
+        .collect();
+    feedback.approved = approved.len();
+
+    let summary = options.summary.trim();
+    if feedback.note_ids.is_empty() && approved.is_empty() && summary.is_empty() {
+        return feedback;
+    }
+
+    let mut text = String::new();
+    if feedback.note_ids.is_empty() {
+        text.push_str("I reviewed the current uncommitted changes. No changes requested.\n\n");
+    } else {
+        text.push_str("I reviewed the current uncommitted changes. Please address the following notes.\n\n");
+    }
+    if !summary.is_empty() {
+        let _ = writeln!(text, "{summary}\n");
+    }
+    text.push_str(&sections);
+
+    if !approved.is_empty() && (options.list_approved || feedback.note_ids.is_empty()) {
+        text.push_str("## Reviewed\n\nThese files look good, no changes needed:\n");
+        for path in &approved {
+            let _ = writeln!(text, "- `{path}`");
+        }
+    }
+
+    feedback.text = text.trim_end().to_owned() + "\n";
+    feedback
+}
+
+fn write_note(out: &mut String, note: &Note, diff: Option<&FileDiff>) {
+    match &note.anchor {
+        Some(anchor) => {
+            let changed = if anchor.is_current(diff) { "" } else { " (changed since)" };
+            let mut lines = anchor.text.lines();
+            if let (Some(only), None) = (lines.next(), lines.next()) {
+                let code = code_span(only.get(1..).unwrap_or_default());
+                let _ = writeln!(out, "- **{}**{changed}: {code}", anchor.label());
+            } else {
+                let _ = writeln!(out, "- **{}**{changed}:", anchor.label());
+                out.push_str("  ```diff\n");
+                for line in anchor.text.lines() {
+                    let _ = writeln!(out, "  {line}");
+                }
+                out.push_str("  ```\n");
+            }
+        }
+        None => out.push_str("- **File**\n"),
+    }
+    for line in note.body.lines() {
+        if line.trim().is_empty() {
+            out.push('\n');
+        } else {
+            let _ = writeln!(out, "  {line}");
+        }
+    }
+}
+
+fn code_span(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "(blank line)".to_owned();
+    }
+    let mut shown: String = trimmed.chars().take(MAX_QUOTE_CHARS).collect();
+    if shown.len() < trimmed.len() {
+        shown.push('…');
+    }
+    if shown.contains('`') { format!("`` {shown} ``") } else { format!("`{shown}`") }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::diff;
+    use crate::core::review::{LineAnchor, Side};
+
+    fn sample_diff() -> FileDiff {
+        diff::untracked("src/main.rs", b"fn main() {\n    let x = 1;\n}\n")
+    }
+
+    #[test]
+    fn renders_notes_and_approvals() {
+        let diff = sample_diff();
+        let mut review = ReviewState::default();
+        let anchor = LineAnchor { side: Side::New, line: 2, end_line: None, text: "+    let x = 1;".into() };
+        review.add_note("src/main.rs", Some(anchor), "Use a descriptive name.\nAlso add a test.", 1);
+        let range = LineAnchor::covering(&diff, 0, 2).unwrap();
+        review.add_note("src/main.rs", Some(range), "Simplify.", 2);
+        review.add_note("src/main.rs", None, "Split this file.", 2);
+        review.add_note("gone.rs", None, "Restore this.", 3);
+        review.add_note("src/extra.rs", None, "Rename.", 4);
+        let files = [
+            FileInfo { path: "src/main.rs", diff: Some(&diff), approval: ApprovalState::Unreviewed },
+            FileInfo { path: "src/lib.rs", diff: None, approval: ApprovalState::Approved },
+            // Reviewed but commented on: listed with its comments, not as "no changes needed".
+            FileInfo { path: "src/extra.rs", diff: None, approval: ApprovalState::Approved },
+        ];
+
+        let options = Options { summary: "Mostly good.".into(), list_approved: true, ..Options::default() };
+        let feedback = build(&review, &files, &options);
+        assert_eq!(feedback.note_ids.len(), 5);
+        assert_eq!(feedback.files_with_notes, 3);
+        let expected = "\
+I reviewed the current uncommitted changes. Please address the following notes.
+
+Mostly good.
+
+## `src/main.rs`
+
+- **Line 2**: `let x = 1;`
+  Use a descriptive name.
+  Also add a test.
+- **Lines 1–3**:
+  ```diff
+  +fn main() {
+  +    let x = 1;
+  +}
+  ```
+  Simplify.
+- **File**
+  Split this file.
+
+## `src/extra.rs`
+
+- **File**
+  Rename.
+
+## `gone.rs` (no longer changed)
+
+- **File**
+  Restore this.
+
+## Reviewed
+
+These files look good, no changes needed:
+- `src/lib.rs`
+";
+        assert_eq!(feedback.text, expected);
+    }
+
+    #[test]
+    fn skips_sent_notes_unless_requested() {
+        let mut review = ReviewState::default();
+        let id = review.add_note("a.rs", None, "Fix", 1);
+        review.set_sent(&[id], Some(2));
+        let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
+        assert!(build(&review, &files, &Options::default()).is_empty());
+        let all = build(&review, &files, &Options { include_sent: true, ..Options::default() });
+        assert_eq!(all.note_ids, [id]);
+    }
+
+    #[test]
+    fn marks_outdated_anchors() {
+        let diff = sample_diff();
+        let mut review = ReviewState::default();
+        let anchor = LineAnchor { side: Side::New, line: 2, end_line: None, text: "+let y = 2;".into() };
+        review.add_note("src/main.rs", Some(anchor), "Hmm", 1);
+        let files = [FileInfo { path: "src/main.rs", diff: Some(&diff), approval: ApprovalState::Unreviewed }];
+        let text = build(&review, &files, &Options::default()).text;
+        assert!(text.contains("**Line 2** (changed since): `let y = 2;`"));
+    }
+
+    #[test]
+    fn approvals_alone_produce_a_go_ahead() {
+        let review = ReviewState::default();
+        let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Approved }];
+        let text = build(&review, &files, &Options::default()).text;
+        assert!(text.starts_with("I reviewed the current uncommitted changes. No changes requested."));
+        assert!(text.contains("- `a.rs`"));
+    }
+}

@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Checks (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev desktop-file-utils appstream
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: make check
+
+  deb:
+    name: Debian package (Ubuntu 24.04)
+    needs: check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-deb --locked
+      - run: make deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-review-deb
+          path: target/debian/*.deb
+
+  rpm:
+    name: RPM package (Fedora)
+    needs: check
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - run: dnf install -y git make gcc rust cargo gtk4-devel libadwaita-devel gtksourceview5-devel
+      - uses: actions/checkout@v4
+      - run: cargo install cargo-generate-rpm --locked
+      - run: PATH="$HOME/.cargo/bin:$PATH" make rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claude-review-rpm
+          path: target/generate-rpm/*.rpm

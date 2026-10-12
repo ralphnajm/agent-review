@@ -1,0 +1,86 @@
+[package]
+name = "claude-review"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Review the changes Claude Code makes and send your notes back to it"
+license = "MIT"
+repository = "https://github.com/ralphnajm/agent-review"
+readme = "README.md"
+keywords = ["git", "review", "claude", "gtk", "diff"]
+categories = ["development-tools"]
+publish = false
+
+[dependencies]
+adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
+anyhow = "1.0.104"
+async-channel = "2.5.0"
+gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
+notify = { version = "8.2.0", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sourceview5 = { version = "0.11.2", features = ["v5_12"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "allow"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Widget construction functions are long by nature.
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+struct_field_names = "allow"
+struct_excessive_bools = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+new_without_default = "allow"
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "allow"
+print_stdout = "warn"
+
+# Packaging: `cargo deb` (Debian/Ubuntu) and `cargo generate-rpm` (Fedora).
+# Both expect `cargo build --release` to have run first.
+[package.metadata.deb]
+name = "claude-review"
+maintainer = "Claude Review contributors"
+section = "devel"
+priority = "optional"
+depends = "$auto, git"
+extended-description = "A native GTK app for reviewing the uncommitted changes Claude Code makes: browse staged and unstaged changes per project, approve files, leave line notes and hand the feedback back to Claude Code."
+assets = [
+    ["target/release/claude-review", "usr/bin/", "755"],
+    ["data/io.github.claude_review.ClaudeReview.desktop", "usr/share/applications/", "644"],
+    ["data/io.github.claude_review.ClaudeReview.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["data/icons/hicolor/scalable/apps/io.github.claude_review.ClaudeReview.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["data/icons/hicolor/symbolic/apps/io.github.claude_review.ClaudeReview-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Review the changes Claude Code makes"
+assets = [
+    { source = "target/release/claude-review", dest = "/usr/bin/claude-review", mode = "755" },
+    { source = "data/io.github.claude_review.ClaudeReview.desktop", dest = "/usr/share/applications/io.github.claude_review.ClaudeReview.desktop", mode = "644" },
+    { source = "data/io.github.claude_review.ClaudeReview.metainfo.xml", dest = "/usr/share/metainfo/io.github.claude_review.ClaudeReview.metainfo.xml", mode = "644" },
+    { source = "data/icons/hicolor/scalable/apps/io.github.claude_review.ClaudeReview.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.claude_review.ClaudeReview.svg", mode = "644" },
+    { source = "data/icons/hicolor/symbolic/apps/io.github.claude_review.ClaudeReview-symbolic.svg", dest = "/usr/share/icons/hicolor/symbolic/apps/io.github.claude_review.ClaudeReview-symbolic.svg", mode = "644" },
+]
+auto-req = "auto"
+
+[package.metadata.generate-rpm.requires]
+git = "*"
+gtk4 = ">= 4.14"
+libadwaita = ">= 1.5"
+gtksourceview5 = ">= 5.12"

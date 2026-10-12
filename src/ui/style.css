@@ -1,0 +1,172 @@
+/* A compact, flat look in the spirit of code editors like Zed. */
+
+/* ----- Top bar ----- */
+.topbar { min-height: 44px; }
+.topbar button.toolbar-button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+.topbar button.toolbar-button:not(.suggested-action) {
+  background: alpha(currentColor, 0.06);
+  box-shadow: inset 0 0 0 1px alpha(currentColor, 0.1);
+}
+.topbar button.toolbar-button:not(.suggested-action):hover { background: alpha(currentColor, 0.1); }
+
+.review-check { margin-right: 4px; }
+
+.status-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+  background: alpha(currentColor, 0.07);
+  color: alpha(currentColor, 0.75);
+}
+.status-pill.done { background: alpha(@success_color, 0.16); color: @success_color; }
+
+.count-badge {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: alpha(white, 0.25);
+  font-size: 0.8em;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.project-button { padding: 0 8px; min-height: 30px; }
+.project-button .project-name { font-weight: 700; }
+.project-button .project-branch {
+  font-size: 0.85em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: alpha(currentColor, 0.08);
+  color: alpha(currentColor, 0.7);
+}
+
+/* ----- File panel ----- */
+.file-panel { background: @sidebar_bg_color; }
+paned > separator { background: alpha(currentColor, 0.1); min-width: 1px; }
+
+.mode-tabs {
+  padding: 2px;
+  border-radius: 8px;
+  background: alpha(currentColor, 0.07);
+}
+.mode-tabs button.mode-tab {
+  min-height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: none;
+  box-shadow: none;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+.mode-tabs button.mode-tab:checked {
+  background: @view_bg_color;
+  box-shadow: 0 1px 2px alpha(black, 0.15);
+}
+.mode-tabs .tab-count { font-size: 0.85em; opacity: 0.55; font-feature-settings: "tnum"; }
+
+.panel-search { min-height: 30px; }
+
+.file-panel list { background: none; }
+.file-panel list > row {
+  min-height: 28px;
+  padding: 0 10px;
+  margin: 0 6px;
+  border-radius: 6px;
+}
+.file-panel list > row.approved .file-name { opacity: 0.55; }
+.file-name { font-weight: 500; }
+.file-dir { font-size: 0.85em; opacity: 0.5; }
+
+.status-letter {
+  min-width: 14px;
+  font-family: monospace;
+  font-size: 0.85em;
+  font-weight: 800;
+}
+.status-letter.added { color: @success_color; }
+.status-letter.modified { color: @accent_color; }
+.status-letter.deleted { color: @error_color; }
+.status-letter.renamed { color: #c061cb; }
+.status-letter.conflicted { color: @warning_color; }
+
+.stat-added, .stat-removed { font-family: monospace; font-size: 0.8em; font-weight: 600; }
+.stat-added { color: @success_color; }
+.stat-removed { color: @error_color; }
+
+.comment-count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: alpha(@accent_bg_color, 0.2);
+  color: @accent_color;
+  font-size: 0.75em;
+  font-weight: 800;
+}
+
+/* ----- Main area ----- */
+.main-area { background: @view_bg_color; }
+.file-header {
+  min-height: 36px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid alpha(currentColor, 0.1);
+}
+.file-header-dir { opacity: 0.55; }
+.file-header-name { font-weight: 700; }
+.file-header-meta { font-size: 0.85em; opacity: 0.6; font-feature-settings: "tnum"; }
+
+.chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.8em;
+  font-weight: 600;
+  background: alpha(currentColor, 0.08);
+}
+.chip.warning-chip { background: alpha(@warning_color, 0.16); color: @warning_color; }
+
+button.small-button { min-height: 24px; min-width: 24px; padding: 0 6px; border-radius: 6px; }
+button.icon-button { min-height: 28px; min-width: 28px; padding: 0; border-radius: 6px; }
+button.composer-button {
+  min-height: 32px;
+  padding: 0 16px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+/* ----- Diff ----- */
+/* The code font is set on the view; comment widgets inside it get the UI font back at startup. */
+.diff-view { font-family: monospace; }
+.diff-view gutter { background: @view_bg_color; }
+
+/* ----- Inline comments ----- */
+.comment-thread { margin: 6px 0 10px 0; }
+.comment-card, .comment-composer {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: @card_bg_color;
+  box-shadow: 0 0 0 1px alpha(currentColor, 0.12), 0 2px 6px alpha(black, 0.06);
+}
+.comment-card.sent { opacity: 0.65; }
+.comment-composer { box-shadow: 0 0 0 1px alpha(@accent_color, 0.6), 0 2px 8px alpha(black, 0.08); }
+.comment-target { font-weight: 700; font-size: 0.9em; }
+.comment-meta { font-size: 0.85em; opacity: 0.55; }
+.comment-body { line-height: 1.4; }
+.comment-quote {
+  font-family: monospace;
+  font-size: 0.85em;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: alpha(currentColor, 0.05);
+}
+.comment-input {
+  border-radius: 6px;
+  background: @view_bg_color;
+  box-shadow: inset 0 0 0 1px alpha(currentColor, 0.12);
+}
