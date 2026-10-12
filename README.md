@@ -49,20 +49,15 @@ You can also open a project straight from a terminal: `claude-review path/to/rep
 
 ## Development
 
-Build dependencies:
+Rust comes from [rustup](https://rustup.rs); `rust-toolchain.toml` pins the latest stable
+release, so local builds and CI use the same compiler. Other build dependencies:
 
 ```sh
 # Fedora
-sudo dnf install rust cargo clippy rustfmt gtk4-devel libadwaita-devel gtksourceview5-devel \
-    desktop-file-utils appstream
+sudo dnf install rustup gtk4-devel libadwaita-devel gtksourceview5-devel desktop-file-utils appstream
 # Ubuntu
-sudo apt install cargo clippy rustfmt libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev \
-    desktop-file-utils appstream
+sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev desktop-file-utils appstream
 ```
-
-If you'd rather not install these on the host, a Fedora toolbox works too:
-`toolbox create claude-review`, then run the commands inside it with
-`toolbox run -c claude-review …`.
 
 | Command | What it does |
 | --- | --- |
@@ -70,7 +65,6 @@ If you'd rather not install these on the host, a Fedora toolbox works too:
 | `make check` | rustfmt check, clippy (pedantic, warnings as errors), tests, and desktop/AppStream validation |
 | `make fmt` | Format the code |
 | `make release` | Optimised build (thin LTO, stripped) |
-| `CLAUDE_REVIEW_SCREENSHOT=out.png cargo run -- <repo>` | Render the window to a PNG after 3 s, then quit (handy for checking the UI) |
 
 CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04 and builds `.deb` and `.rpm`
 artifacts.

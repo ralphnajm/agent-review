@@ -2,7 +2,7 @@
 name = "claude-review"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.99"
 description = "Review the changes Claude Code makes and send your notes back to it"
 license = "MIT"
 repository = "https://github.com/ralphnajm/agent-review"

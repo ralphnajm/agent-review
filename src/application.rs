@@ -22,10 +22,7 @@ pub fn run() -> glib::ExitCode {
         load_css();
         setup_actions(app);
     });
-    app.connect_activate(|app| {
-        window(app).present();
-        schedule_screenshot(app);
-    });
+    app.connect_activate(|app| window(app).present());
     // `claude-review <folder>` opens that folder, in the running instance if any.
     app.connect_open(|app, files, _| {
         let window = window(app);
@@ -33,35 +30,8 @@ pub fn run() -> glib::ExitCode {
             window.open_project(path);
         }
         window.present();
-        schedule_screenshot(app);
     });
     app.run()
-}
-
-/// Development aid: with `CLAUDE_REVIEW_SCREENSHOT=<file.png>` set, renders the
-/// window offscreen to that file shortly after start-up, then quits.
-fn schedule_screenshot(app: &adw::Application) {
-    let Some(path) = std::env::var_os("CLAUDE_REVIEW_SCREENSHOT") else { return };
-    let app = app.clone();
-    glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-        if let Some(window) = app.active_window() {
-            let (width, height) = (window.width(), window.height());
-            let paintable = gtk::WidgetPaintable::new(Some(&window));
-            let snapshot = gtk::Snapshot::new();
-            paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
-            let renderer = gtk::gsk::CairoRenderer::new();
-            if let Some(node) = snapshot.to_node()
-                && renderer.realize(None::<&gdk::Surface>).is_ok()
-            {
-                let texture = renderer.render_texture(&node, None);
-                if let Err(err) = texture.save_to_png(&path) {
-                    eprintln!("claude-review: screenshot failed: {err}");
-                }
-                renderer.unrealize();
-            }
-        }
-        app.quit();
-    });
 }
 
 /// The main window, created on first use.
