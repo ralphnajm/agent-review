@@ -5,6 +5,30 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [Unreleased]
+
+### Added
+
+- Ctrl+F finds text in the open file, highlighting every match; Enter and Shift+Enter move
+  between them.
+
+### Changed
+
+- Clicking a line number no longer opens the comment box straight away: drag down the line
+  numbers to select several lines, and the comment box opens when you release the button.
+- The "Comment on lines …" button for selected text is gone: select lines from the line numbers
+  instead, or select code and press Ctrl+M.
+- Filtering the file list moved to Ctrl+Shift+F.
+- Buttons show a pointing-hand cursor.
+- Opening a file comment while scrolled down brings the comment box into view.
+
+### Fixed
+
+- Opening, closing and posting a comment no longer makes the diff flash or jump back to the
+  top of the file for a moment.
+- When the agent edits the file you are viewing, only the changed lines update: the view no
+  longer flashes the top of the file, and what you are reading stays where it is.
+
 ## [0.2.0] - 2026-10-12
 
 ### Fixed

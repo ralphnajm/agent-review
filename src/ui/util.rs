@@ -12,6 +12,39 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     label
 }
 
+/// Shows the pointing hand over the buttons in `window`, including those GTK
+/// and libadwaita create themselves (header bar, dialogs, toasts, popovers):
+/// each gets the cursor the first time the pointer reaches it.
+pub fn use_pointer_cursor(window: &impl IsA<gtk::Widget>) {
+    let motion = gtk::EventControllerMotion::new();
+    motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+    motion.connect_enter(|motion, _, _| set_pointer_cursor(motion));
+    motion.connect_motion(|motion, _, _| set_pointer_cursor(motion));
+    window.add_controller(motion);
+}
+
+fn set_pointer_cursor(motion: &gtk::EventControllerMotion) {
+    // The event may come from a popover, which has its own surface.
+    let Some(event) = motion.current_event() else { return };
+    let (Some(native), Some((x, y))) = (event.surface().and_then(|s| gtk::Native::for_surface(&s)), event.position())
+    else {
+        return;
+    };
+    if let Some(button) = button_at(&native, x, y)
+        && button.cursor().is_none()
+    {
+        button.set_cursor_from_name(Some("pointer"));
+    }
+}
+
+/// The button under surface coordinates `x`, `y` of `native`.
+pub fn button_at(native: &gtk::Native, x: f64, y: f64) -> Option<gtk::Widget> {
+    let (dx, dy) = native.surface_transform();
+    let target = native.pick(x - dx, y - dy, gtk::PickFlags::DEFAULT)?;
+    std::iter::successors(Some(target), WidgetExt::parent)
+        .find(|w| w.is::<gtk::Button>() || w.is::<gtk::CheckButton>() || w.is::<gtk::Switch>())
+}
+
 /// Human friendly "5 minutes ago" for a Unix timestamp in seconds.
 pub fn relative_time(timestamp: i64, now: i64) -> String {
     let delta = (now - timestamp).max(0);

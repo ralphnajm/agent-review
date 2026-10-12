@@ -182,6 +182,7 @@ impl Window {
         self.0.w.window.add_action(&reviewed);
         self.add_action("comment", |w| w.0.w.diff.open_composer(true));
         self.add_action("comment-file", |w| w.0.w.diff.open_composer(false));
+        self.add_action("find", |w| w.0.w.diff.start_search());
         self.add_action("copy-feedback", Self::copy_feedback);
         self.add_action("focus-search", |w| {
             w.0.w.sidebar.set_visible(true);
@@ -220,7 +221,8 @@ impl Window {
             ("win.reviewed", &["<Control><Shift>a"]),
             ("win.comment", &["<Control>m"]),
             ("win.copy-feedback", &["<Control><Shift>c"]),
-            ("win.focus-search", &["<Control>f"]),
+            ("win.find", &["<Control>f"]),
+            ("win.focus-search", &["<Control><Shift>f"]),
             ("win.toggle-sidebar", &["<Control>b", "F9"]),
             ("win.diff-mode::all", &["<Alt>1"]),
             ("win.diff-mode::staged", &["<Alt>2"]),
@@ -240,7 +242,7 @@ impl Window {
         for name in ["refresh", "next-file", "prev-file", "copy-feedback", "clear-review", "focus-search"] {
             self.set_action_enabled(name, has_project);
         }
-        for name in ["reviewed", "comment", "comment-file"] {
+        for name in ["reviewed", "comment", "comment-file", "find"] {
             self.set_action_enabled(name, has_file);
         }
         self.0.w.review_actions.set_visible(has_project);
@@ -860,6 +862,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         .width_request(520)
         .height_request(420)
         .build();
+    util::use_pointer_cursor(&window);
 
     // ----- Top bar -----
     let sidebar_toggle = gtk::ToggleButton::builder()
@@ -941,7 +944,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         tabs.append(&button);
         mode_counts.push((mode, count));
     }
-    let search = gtk::SearchEntry::builder().placeholder_text("Filter files (Ctrl+F)").build();
+    let search = gtk::SearchEntry::builder().placeholder_text("Filter files (Ctrl+Shift+F)").build();
     search.add_css_class("panel-search");
     let tools = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)

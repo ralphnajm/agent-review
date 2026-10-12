@@ -1,6 +1,7 @@
 //! UI-independent logic: git access, diff parsing, review state, feedback
 //! generation.
 
+pub mod align;
 pub mod diff;
 pub mod feedback;
 pub mod git;

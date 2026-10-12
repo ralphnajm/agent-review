@@ -13,10 +13,12 @@ links against the GTK libraries that Fedora and Ubuntu already ship.
   projects at any time (Ctrl+P).
 - **Changes:** browse all uncommitted changes, or only staged or only unstaged ones. Untracked
   files count as new. The view updates live as the agent edits files.
-- **Diffs:** syntax highlighted, with old and new line numbers.
+- **Diffs:** syntax highlighted, with old and new line numbers. Ctrl+F finds text in the open
+  file; Ctrl+Shift+F filters the file list.
 - **Comments:**
-  - Click a line number to comment on that line, or shift-click to extend to a range.
-  - Select lines and click the "Comment on lines …" button that appears (or press Ctrl+M).
+  - Click a line number to comment on that line, or drag down the line numbers to comment on
+    several lines. Shift-click extends the previous selection.
+  - Or select lines in the code and press Ctrl+M.
   - Use the icon next to the file name to comment on the whole file.
   - Comments appear inline, under the lines they refer to.
 - **Reviewed checkbox:** tick the box next to the file name (Ctrl+Shift+A) to mark the file

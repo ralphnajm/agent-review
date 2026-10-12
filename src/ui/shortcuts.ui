@@ -18,7 +18,9 @@
             <property name="title">Files</property>
             <child><object class="GtkShortcutsShortcut"><property name="title">Next file</property><property name="accelerator">&lt;Alt&gt;Down</property></object></child>
             <child><object class="GtkShortcutsShortcut"><property name="title">Previous file</property><property name="accelerator">&lt;Alt&gt;Up</property></object></child>
-            <child><object class="GtkShortcutsShortcut"><property name="title">Filter files</property><property name="accelerator">&lt;Control&gt;f</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Find in the file</property><property name="accelerator">&lt;Control&gt;f</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Next and previous match</property><property name="accelerator">Return &lt;Shift&gt;Return</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Filter files</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;f</property></object></child>
             <child><object class="GtkShortcutsShortcut"><property name="title">All, staged or unstaged changes</property><property name="accelerator">&lt;Alt&gt;1 &lt;Alt&gt;2 &lt;Alt&gt;3</property></object></child>
           </object>
         </child>

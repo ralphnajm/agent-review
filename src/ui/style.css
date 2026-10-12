@@ -73,6 +73,7 @@ paned > separator { background: alpha(currentColor, 0.1); min-width: 1px; }
 .mode-tabs .tab-count { font-size: 0.85em; opacity: 0.55; font-feature-settings: "tnum"; }
 
 .panel-search { min-height: 30px; }
+.search-count { font-size: 0.85em; opacity: 0.6; font-feature-settings: "tnum"; }
 
 .file-panel list { background: none; }
 .file-panel list > row {
