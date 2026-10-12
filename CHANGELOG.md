@@ -5,7 +5,7 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
-## [Unreleased]
+## [0.3.0] - 2026-10-12
 
 ### Added
 

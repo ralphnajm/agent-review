@@ -10,7 +10,7 @@ Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by c
 
 ## Changelog and releases
 
-Describe every user-facing change in `CHANGELOG.md` under `## [Unreleased]` (`Added` / `Changed` / `Fixed` / `Removed`), written for users. Only release when asked; CI turns each new `Cargo.toml` version pushed to `main` into a GitHub release:
+Describe every user-facing change in `CHANGELOG.md` under `## [Unreleased]` (`Added` / `Changed` / `Fixed` / `Removed`), written for users. Release with every change pushed to `main`: CI turns each new `Cargo.toml` version into a GitHub release, and a push without a version bump publishes nothing:
 
 1. Bump `version` in `Cargo.toml` (semver: patch for fixes, minor for features, major for breaking changes) and run `cargo build` to update `Cargo.lock`.
 2. Rename `## [Unreleased]` to `## [x.y.z] - YYYY-MM-DD`. It becomes the release notes.
