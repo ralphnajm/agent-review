@@ -5,6 +5,20 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.2.0] - 2026-10-12
+
+### Fixed
+
+- Cancel and Comment in the comment box no longer crash the app.
+- The comment box gets keyboard focus as soon as it opens and behaves like a normal text
+  field: typing, pasting, the right-click menu and clicking away all work.
+- Cancelling a comment (Cancel or Esc) discards the draft instead of keeping it for the
+  next comment.
+
+### Added
+
+- Selecting lines in the diff shows a "Comment on lines …" button for the selection.
+
 ## [0.1.2] - 2026-10-12
 
 ### Changed

@@ -16,7 +16,7 @@ links against the GTK libraries that Fedora and Ubuntu already ship.
 - **Diffs:** syntax highlighted, with old and new line numbers.
 - **Comments:**
   - Click a line number to comment on that line, or shift-click to extend to a range.
-  - Select lines and press Ctrl+M to comment on the selection.
+  - Select lines and click the "Comment on lines …" button that appears (or press Ctrl+M).
   - Use the icon next to the file name to comment on the whole file.
   - Comments appear inline, under the lines they refer to.
 - **Reviewed checkbox:** tick the box next to the file name (Ctrl+Shift+A) to mark the file
@@ -71,13 +71,13 @@ CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04 and builds the
 
 ### Releasing
 
-Every change pushed to `main` comes with a version bump and a changelog entry:
+Describe every user-facing change in `CHANGELOG.md` under `## [Unreleased]` as you make it.
+To release:
 
 1. Bump `version` in `Cargo.toml` following [Semantic Versioning](https://semver.org/): patch
    for fixes, minor for new features, major for breaking changes. Run `cargo build` so
    `Cargo.lock` picks up the new version.
-2. Add a `## [x.y.z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` describing the
-   change (`Added`, `Changed`, `Fixed`, `Removed`).
+2. Rename `## [Unreleased]` in `CHANGELOG.md` to `## [x.y.z] - YYYY-MM-DD`.
 3. Add a matching `<release version="x.y.z" date="YYYY-MM-DD"/>` entry at the top of
    `<releases>` in `data/io.github.ralphnajm.AgentReview.metainfo.xml`.
 4. Run `make check` (it fails if the changelog or metadata entry is missing), commit and push.
