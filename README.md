@@ -43,7 +43,8 @@ about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
   jumps straight to it. Show all uncommitted changes, or only staged or only unstaged ones.
   Untracked files count as new, and everything updates live as the agent edits files.
 - **Diffs:** syntax highlighted, with old and new line numbers, find across files, and a
-  filter for the file list.
+  filter for the file list. Show changes one above the other, or old and new side by side
+  (**Side by Side** in the main menu).
 - **Comments:**
   - Hover a line and click the comment button beside it to comment on that line, or drag it
     up or down to comment on several lines. Shift-click extends the previous pick.
@@ -192,6 +193,7 @@ src/
     git.rs        repository access through the git CLI (status, diffs, watched dirs)
     status.rs     `git status --porcelain=v2` parser
     diff.rs       unified diff parser, fingerprints, line snippets
+    split.rs      side-by-side pairing and wrapping of diff lines
     review.rs     comments, line-range anchors and reviewed state
     feedback.rs   Markdown prompt generation
     queue.rs      posted reviews and the agent's progress on them

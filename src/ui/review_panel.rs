@@ -31,7 +31,9 @@ const LINE_STEP: f64 = 48.0;
 pub struct FileData<'a> {
     pub path: &'a str,
     pub kind: ChangeKind,
-    /// Counts, staging and rename details for the header.
+    pub additions: u32,
+    pub deletions: u32,
+    /// Kind of change and rename details for the header.
     pub meta: String,
     pub approval: ApprovalState,
     pub diff: Cow<'a, FileDiff>,
@@ -51,6 +53,10 @@ struct Section {
     badge: gtk::Label,
     dir: gtk::Label,
     name: gtk::Label,
+    /// Comments still to send, beside the comment button.
+    comments: gtk::Label,
+    added: gtk::Label,
+    removed: gtk::Label,
     meta: gtk::Label,
     stale: gtk::Label,
     history_slot: gtk::Box,
@@ -91,6 +97,8 @@ struct Inner {
     scrolling: Cell<bool>,
     /// Who comments are written by, shown in the composer.
     author: RefCell<Option<Author>>,
+    /// Whether diffs show the old and new sides beside each other.
+    split: Cell<bool>,
     on_add: RefCell<Option<AddCallback>>,
     on_delete: RefCell<Option<DeleteCallback>>,
     on_reviewed: RefCell<Option<PathCallback>>,
@@ -118,6 +126,7 @@ impl ReviewPanel {
             settle: RefCell::default(),
             scrolling: Cell::new(false),
             author: RefCell::default(),
+            split: Cell::new(false),
             on_add: RefCell::default(),
             on_delete: RefCell::default(),
             on_reviewed: RefCell::default(),
@@ -205,6 +214,16 @@ impl ReviewPanel {
         }
     }
 
+    /// Shows the old and new sides of every diff beside each other, or one above the other.
+    pub fn set_split(&self, split: bool) {
+        self.0.split.set(split);
+        for section in self.0.sections.borrow().iter() {
+            if let Some(view) = section.view.borrow().as_ref() {
+                view.set_split(split);
+            }
+        }
+    }
+
     /// Removes every file, for another project or view.
     pub fn clear(&self) {
         self.set_files(Vec::new());
@@ -242,16 +261,24 @@ impl ReviewPanel {
         let dir = util::label("", &["file-header-dir"]);
         dir.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         let name = util::label("", &["file-header-name"]);
+        let comments = gtk::Label::new(None);
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        content.set_halign(gtk::Align::Center);
+        content.append(&gtk::Image::from_icon_name("chat-message-new-symbolic"));
+        content.append(&comments);
         let comment = gtk::Button::builder()
-            .icon_name("chat-message-new-symbolic")
+            .child(&content)
             .tooltip_text("Comment on This File")
             .valign(gtk::Align::Center)
             .build();
         comment.add_css_class("flat");
-        comment.add_css_class("icon-button");
+        comment.add_css_class("comment-button");
         let history_slot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let added = util::label("", &["stat-added"]);
+        added.set_margin_start(8);
+        let removed = util::label("", &["stat-removed"]);
         let meta = util::label("", &["file-header-meta"]);
-        meta.set_margin_start(8);
+        meta.set_margin_start(4);
         meta.set_hexpand(true);
         meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
         let stale = util::label("Changed since review", &["chip", "warning-chip"]);
@@ -267,6 +294,8 @@ impl ReviewPanel {
             name.upcast_ref(),
             comment.upcast_ref(),
             history_slot.upcast_ref(),
+            added.upcast_ref(),
+            removed.upcast_ref(),
             meta.upcast_ref(),
             stale.upcast_ref(),
         ] {
@@ -283,6 +312,9 @@ impl ReviewPanel {
             badge,
             dir,
             name,
+            comments,
+            added,
+            removed,
             meta,
             stale,
             history_slot,
@@ -337,6 +369,13 @@ impl ReviewPanel {
         section.badge.set_css_classes(&["status-letter", file.kind.css_class()]);
         section.dir.set_text(&if dir.is_empty() { String::new() } else { format!("{dir}/") });
         section.name.set_text(name);
+        let unsent = file.notes.iter().filter(|n| n.sent_at.is_none()).count();
+        section.comments.set_text(&unsent.to_string());
+        section.comments.set_visible(unsent > 0);
+        section.added.set_text(&format!("+{}", file.additions));
+        section.added.set_visible(file.additions > 0);
+        section.removed.set_text(&format!("−{}", file.deletions));
+        section.removed.set_visible(file.deletions > 0);
         section.meta.set_text(&file.meta);
         section.stale.set_visible(file.approval == ApprovalState::Stale);
         section.updating.set(true);
@@ -400,7 +439,7 @@ impl ReviewPanel {
         let Some(section) = self.section(path) else { return };
         let value = self.0.scroller.window().vadjustment().value();
         if self.0.scroller.offset_of(&section.widget).is_some_and(|top| top < value) {
-            self.scroll_to(path);
+            self.hold_at_top(path);
         }
     }
 
@@ -411,6 +450,7 @@ impl ReviewPanel {
         }
         let view = DiffView::new(&self.0.scroller, &self.0.search.settings);
         view.set_author(self.0.author.borrow().as_ref());
+        view.set_split(self.0.split.get());
         let path = section.path.clone();
         let weak = self.weak();
         view.connect_add(move |anchor, body| {
@@ -595,6 +635,11 @@ impl ReviewPanel {
     pub fn scroll_to(&self, path: &str) {
         let Some(section) = self.section(path) else { return };
         self.set_expanded(&section, true);
+        self.hold_at_top(path);
+    }
+
+    /// Scrolls a file's header to the top, collapsed or not.
+    fn hold_at_top(&self, path: &str) {
         self.0.current.replace(Some(path.to_owned()));
         // Sizes above it may still change as diffs are laid out: hold it there for a few frames.
         self.0.target.replace(Some((path.to_owned(), SETTLE_FRAMES)));

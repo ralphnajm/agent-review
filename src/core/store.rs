@@ -39,6 +39,8 @@ pub struct Settings {
     pub recent: Vec<RecentProject>,
     pub last_project: Option<PathBuf>,
     pub diff_mode: DiffMode,
+    /// Whether diffs show the old and new sides beside each other.
+    pub side_by_side: bool,
     pub show_sidebar: bool,
     pub sidebar_width: i32,
     pub window: WindowGeometry,
@@ -50,6 +52,7 @@ impl Default for Settings {
             recent: Vec::new(),
             last_project: None,
             diff_mode: DiffMode::All,
+            side_by_side: false,
             show_sidebar: true,
             sidebar_width: 320,
             window: WindowGeometry::default(),

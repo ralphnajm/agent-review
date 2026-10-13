@@ -9,6 +9,7 @@ pub mod hash;
 pub mod mcp;
 pub mod queue;
 pub mod review;
+pub mod split;
 pub mod status;
 pub mod store;
 pub mod watcher;

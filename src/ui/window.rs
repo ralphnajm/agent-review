@@ -216,6 +216,21 @@ impl Window {
         });
         self.0.w.window.add_action(&mode);
 
+        let side_by_side = self.0.state.borrow().settings.side_by_side;
+        self.0.w.review.set_split(side_by_side);
+        let split = gio::SimpleAction::new_stateful("side-by-side", None, &side_by_side.to_variant());
+        let weak = self.weak();
+        split.connect_activate(move |action, _| {
+            let Some(inner) = weak.upgrade() else { return };
+            let side_by_side = !action.state().and_then(|s| s.get::<bool>()).unwrap_or(false);
+            action.set_state(&side_by_side.to_variant());
+            let this = Self(inner);
+            this.0.state.borrow_mut().settings.side_by_side = side_by_side;
+            this.save_settings();
+            this.0.w.review.set_split(side_by_side);
+        });
+        self.0.w.window.add_action(&split);
+
         let accels: &[(&str, &[&str])] = &[
             ("win.open-folder", &["<Control>o"]),
             ("win.switch-project", &["<Control>p"]),
@@ -692,6 +707,8 @@ impl Window {
                 FileData {
                     path,
                     kind: entry.kind_in(mode),
+                    additions: diff.map_or(0, |d| d.additions),
+                    deletions: diff.map_or(0, |d| d.deletions),
                     meta: file_meta(entry, diff, mode),
                     approval: project.approval(path),
                     diff: diff.map_or_else(|| Cow::Owned(placeholder_diff(path)), Cow::Borrowed),
@@ -979,22 +996,9 @@ impl Window {
     }
 }
 
-/// The header details of a file: line counts, kind of change, staging and rename.
+/// The header details of a file after its line counts: kind of change and rename.
 fn file_meta(entry: &StatusEntry, diff: Option<&FileDiff>, mode: DiffMode) -> String {
-    let mut meta = Vec::new();
-    if let Some(diff) = diff.filter(|d| d.additions + d.deletions > 0) {
-        let counts: Vec<String> = [("+", diff.additions), ("−", diff.deletions)]
-            .iter()
-            .filter(|(_, n)| *n > 0)
-            .map(|(sign, n)| format!("{sign}{n}"))
-            .collect();
-        meta.push(counts.join(" "));
-    }
-    meta.push(entry.kind_in(mode).label().to_owned());
-    let detail = staging_detail(entry);
-    if !detail.is_empty() {
-        meta.push(detail);
-    }
+    let mut meta = vec![entry.kind_in(mode).label().to_owned()];
     if let Some(from) = diff.and_then(FileDiff::renamed_from) {
         meta.push(format!("from {from}"));
     }
@@ -1072,6 +1076,9 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     let section = gio::Menu::new();
     section.append(Some("Open Folder…"), Some("win.open-folder"));
     section.append(Some("Refresh"), Some("win.refresh"));
+    main_menu.append_section(None, &section);
+    let section = gio::Menu::new();
+    section.append(Some("Side by Side"), Some("win.side-by-side"));
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
     section.append(Some("Posted Reviews"), Some("win.show-reviews"));

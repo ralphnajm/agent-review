@@ -185,6 +185,7 @@ button.composer-button {
   background: alpha(currentColor, 0.06);
   border-bottom: 1px solid alpha(currentColor, 0.12);
 }
+button.comment-button { min-height: 28px; min-width: 28px; padding: 0 6px; border-radius: 6px; font-size: 0.85em; font-feature-settings: "tnum"; }
 button.history-button { min-height: 28px; padding: 0 6px; border-radius: 6px; font-size: 0.85em; font-feature-settings: "tnum"; }
 .comment-composer { box-shadow: 0 0 0 1px alpha(@accent_color, 0.6), 0 2px 8px alpha(black, 0.08); }
 .comment-target, .comment-author { font-weight: 700; font-size: 0.9em; }

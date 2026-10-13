@@ -5,6 +5,24 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.8.0] - 2026-10-13
+
+### Added
+
+- **Side by Side** in the main menu shows the old and new versions of each file beside each other, with long
+  lines wrapped. Selecting text on the old side and pressing Ctrl+M comments on the removed lines.
+- A file's header shows how many comments it has that are not sent yet, next to its comment button.
+
+### Changed
+
+- The line counts in a file's header are green and red, as in the file panel.
+- A file's header no longer says whether it is staged.
+
+### Fixed
+
+- Ticking **Reviewed**, or clicking a header, now collapses the file when you have scrolled into it and its header
+  is stuck at the top. Before, the file opened again straight away.
+
 ## [0.7.1] - 2026-10-13
 
 ### Changed
