@@ -142,6 +142,30 @@ impl Repo {
         Ok(diffs)
     }
 
+    /// The text of the new side of `path` in `mode`'s diff: the staged version
+    /// for staged changes, else the working tree's. `None` for files too large
+    /// to show, or that are gone.
+    pub fn new_side_text(&self, path: &str, mode: DiffMode) -> Result<Option<String>> {
+        let bytes = if mode == DiffMode::Staged {
+            let output =
+                self.command().args(["cat-file", "blob", &format!(":{path}")]).output().context("Could not run git")?;
+            if !output.status.success() {
+                return Ok(None);
+            }
+            output.stdout
+        } else {
+            let full = self.root.join(path);
+            match std::fs::metadata(&full) {
+                Ok(meta) if meta.is_file() => std::fs::read(&full)?,
+                _ => return Ok(None),
+            }
+        };
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > diff::MAX_UNTRACKED_BYTES {
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
     fn untracked_diff(&self, path: &str) -> FileDiff {
         let full = self.root.join(path);
         match std::fs::metadata(&full) {
@@ -227,6 +251,12 @@ mod tests {
 
         let staged = repo.snapshot(DiffMode::Staged).unwrap();
         assert_eq!(staged.diffs().keys().collect::<Vec<_>>(), ["staged.txt"]);
+
+        // The text the unchanged lines come from: staged or in the working tree.
+        std::fs::write(root.join("staged.txt"), "c\n").unwrap();
+        assert_eq!(repo.new_side_text("staged.txt", DiffMode::Staged).unwrap().as_deref(), Some("b\n"));
+        assert_eq!(repo.new_side_text("staged.txt", DiffMode::All).unwrap().as_deref(), Some("c\n"));
+        assert_eq!(repo.new_side_text("missing.txt", DiffMode::All).unwrap(), None);
 
         let scoped = Repo::discover(&root.join("sub")).unwrap();
         assert_eq!(scoped.scope.as_deref(), Some(Path::new("sub")));

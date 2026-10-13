@@ -2,8 +2,9 @@
 //!
 //! Layout: one top bar holding the project switcher on the left and the
 //! review state and actions on the right; a resizable file panel; and the
-//! diff, with comments inline, filling the rest.
+//! review panel, with every file's diff and comments inline, filling the rest.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,15 +15,17 @@ use gtk::{gio, glib};
 
 use crate::config;
 use crate::core::diff::FileDiff;
-use crate::core::feedback::{self, FileInfo, Options};
+use crate::core::feedback::{self, Feedback, FileInfo, Options};
 use crate::core::git::{Repo, Snapshot};
+use crate::core::queue::{self, Queue};
 use crate::core::review::{ApprovalState, LineAnchor, ReviewState};
 use crate::core::status::{DiffMode, StatusEntry};
 use crate::core::store::{self, Settings};
 use crate::core::{self as app_core, watcher};
-use crate::ui::diff_view::DiffView;
 use crate::ui::file_list::{FileItem, FileList};
 use crate::ui::project_switcher::ProjectSwitcher;
+use crate::ui::review_panel::{FileData, ReviewPanel};
+use crate::ui::reviews_dialog::ReviewsDialog;
 use crate::ui::util;
 
 /// Approvals of files without a diff (e.g. type changes git can't show).
@@ -45,16 +48,13 @@ struct Widgets {
     files: FileList,
     sidebar_stack: gtk::Stack,
     content_stack: gtk::Stack,
-    file_header: gtk::Box,
-    file_badge: gtk::Label,
-    file_dir: gtk::Label,
-    file_name: gtk::Label,
-    file_meta: gtk::Label,
-    stale_chip: gtk::Label,
-    diff: DiffView,
+    review: ReviewPanel,
     review_actions: gtk::Box,
     progress: gtk::Label,
-    copy_count: gtk::Label,
+    post_count: gtk::Label,
+    reviews_button: gtk::Button,
+    reviews_count: gtk::Label,
+    reviews_dialog: ReviewsDialog,
     error_page: adw::StatusPage,
     clean_page: adw::StatusPage,
 }
@@ -66,7 +66,11 @@ struct Project {
     fingerprints: HashMap<String, String>,
     loaded: bool,
     review: ReviewState,
+    /// Reviews posted for the agent to pull, and its progress on them.
+    queue: Queue,
+    posted: Vec<queue::Entry>,
     _watch: Option<watcher::WatchHandle>,
+    _queue_watch: Option<watcher::WatchHandle>,
 }
 
 impl Project {
@@ -94,6 +98,7 @@ struct State {
     settings: Settings,
     project: Option<Project>,
     error: Option<String>,
+    /// The file being read: picked in the file list, or the one at the top of the review panel.
     selected: Option<String>,
     /// Bumped whenever the project changes, to drop stale async results.
     generation: u64,
@@ -171,19 +176,18 @@ impl Window {
         self.add_action("refresh", Self::refresh);
         self.add_action("next-file", |w| w.step(1));
         self.add_action("prev-file", |w| w.step(-1));
-        // The "Reviewed" checkbox next to the file name; its state follows the current file.
-        let reviewed = gio::SimpleAction::new_stateful("reviewed", None, &false.to_variant());
-        let weak = self.weak();
-        reviewed.connect_activate(move |_, _| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).toggle_approve();
+        self.add_action("reviewed", |w| {
+            let selected = w.0.state.borrow().selected.clone();
+            if let Some(path) = selected {
+                w.toggle_approve(&path);
             }
         });
-        self.0.w.window.add_action(&reviewed);
-        self.add_action("comment", |w| w.0.w.diff.open_composer(true));
-        self.add_action("comment-file", |w| w.0.w.diff.open_composer(false));
-        self.add_action("find", |w| w.0.w.diff.start_search());
+        self.add_action("comment", |w| w.open_composer(true));
+        self.add_action("comment-file", |w| w.open_composer(false));
+        self.add_action("find", |w| w.0.w.review.start_search());
+        self.add_action("post-review", Self::post_review);
         self.add_action("copy-feedback", Self::copy_feedback);
+        self.add_action("show-reviews", Self::show_reviews);
         self.add_action("focus-search", |w| {
             w.0.w.sidebar.set_visible(true);
             w.0.w.search.grab_focus();
@@ -205,7 +209,7 @@ impl Window {
             if this.mode() != mode {
                 this.0.state.borrow_mut().settings.diff_mode = mode;
                 this.save_settings();
-                this.0.w.diff.invalidate();
+                this.0.w.review.clear();
                 this.render();
                 this.refresh();
             }
@@ -220,7 +224,9 @@ impl Window {
             ("win.prev-file", &["<Alt>Up", "<Control>Page_Up"]),
             ("win.reviewed", &["<Control><Shift>a"]),
             ("win.comment", &["<Control>m"]),
+            ("win.post-review", &["<Control><Shift>p"]),
             ("win.copy-feedback", &["<Control><Shift>c"]),
+            ("win.show-reviews", &["<Control><Shift>r"]),
             ("win.find", &["<Control>f"]),
             ("win.focus-search", &["<Control><Shift>f"]),
             ("win.toggle-sidebar", &["<Control>b", "F9"]),
@@ -239,7 +245,16 @@ impl Window {
             let state = self.0.state.borrow();
             (state.project.is_some(), state.project.is_some() && state.selected.is_some())
         };
-        for name in ["refresh", "next-file", "prev-file", "copy-feedback", "clear-review", "focus-search"] {
+        for name in [
+            "refresh",
+            "next-file",
+            "prev-file",
+            "post-review",
+            "copy-feedback",
+            "show-reviews",
+            "clear-review",
+            "focus-search",
+        ] {
             self.set_action_enabled(name, has_project);
         }
         for name in ["reviewed", "comment", "comment-file", "find"] {
@@ -264,6 +279,8 @@ impl Window {
         w.search.connect_search_changed(move |entry| {
             if let Some(inner) = weak.upgrade() {
                 inner.w.files.set_filter(&entry.text());
+                inner.w.review.set_filter(&entry.text());
+                Self(inner).render_content();
             }
         });
         let weak = self.weak();
@@ -292,16 +309,40 @@ impl Window {
         });
 
         let weak = self.weak();
-        w.diff.connect_add(move |anchor, body| {
+        w.review.connect_add(move |path, anchor, body| {
             if let Some(inner) = weak.upgrade() {
-                Self(inner).add_note(anchor, &body);
+                Self(inner).add_note(path, anchor, &body);
             }
         });
         let weak = self.weak();
-        w.diff.connect_delete(move |id| {
+        w.review.connect_delete(move |path, id| {
             if let Some(inner) = weak.upgrade() {
-                Self(inner).delete_note(id);
+                Self(inner).delete_note(path, id);
             }
+        });
+        let weak = self.weak();
+        w.review.connect_reviewed(move |path| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).toggle_approve(path);
+            }
+        });
+        let weak = self.weak();
+        w.review.connect_current(move |path| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).follow(path);
+            }
+        });
+        let weak = self.weak();
+        w.review.connect_load(move |path, reply| {
+            let Some(inner) = weak.upgrade() else { return reply(None) };
+            let Some(repo) = inner.state.borrow().project.as_ref().map(|p| p.repo.clone()) else {
+                return reply(None);
+            };
+            let (mode, path) = (Self(inner).mode(), path.to_owned());
+            glib::spawn_future_local(async move {
+                let text = gio::spawn_blocking(move || repo.new_side_text(&path, mode)).await;
+                reply(text.ok().and_then(Result::ok).flatten());
+            });
         });
 
         // Catch changes made while the window was in the background.
@@ -364,6 +405,8 @@ impl Window {
     fn set_project(&self, repo: Repo) {
         let path = repo.path();
         let watch = self.start_watching(&repo);
+        let queue = Queue::for_repo(&repo.root);
+        let queue_watch = self.start_watching_queue(&queue);
         {
             let mut state = self.0.state.borrow_mut();
             state.generation += 1;
@@ -372,6 +415,9 @@ impl Window {
             state.settings.touch_project(&path, app_core::now());
             state.project = Some(Project {
                 review: store::load_review(&path),
+                posted: queue.load(),
+                queue,
+                _queue_watch: Some(queue_watch),
                 repo,
                 snapshot: Snapshot::default(),
                 fingerprints: HashMap::new(),
@@ -381,7 +427,7 @@ impl Window {
         }
         self.save_settings();
         self.0.w.search.set_text("");
-        self.0.w.diff.clear();
+        self.0.w.review.clear();
         self.render();
         self.refresh();
     }
@@ -394,6 +440,7 @@ impl Window {
             state.selected = None;
             state.error = Some(message);
         }
+        self.0.w.review.clear();
         self.render();
     }
 
@@ -411,6 +458,32 @@ impl Window {
             }
         });
         handle
+    }
+
+    /// Reloads the posted reviews whenever the agent pulls or resolves them.
+    fn start_watching_queue(&self, queue: &Queue) -> watcher::WatchHandle {
+        let (sender, receiver) = async_channel::bounded::<()>(1);
+        let handle = watcher::watch_dir(queue.dir().to_path_buf(), move || {
+            let _ = sender.try_send(());
+        });
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            while receiver.recv().await.is_ok() {
+                let Some(inner) = weak.upgrade() else { break };
+                Self(inner).reload_posted();
+            }
+        });
+        handle
+    }
+
+    fn reload_posted(&self) {
+        if let Some(project) = self.0.state.borrow_mut().project.as_mut() {
+            project.posted = project.queue.load();
+        }
+        self.render_toolbar();
+        if self.0.w.reviews_dialog.is_open() {
+            self.update_reviews_dialog();
+        }
     }
 
     // ----- Refreshing ----------------------------------------------------
@@ -573,20 +646,23 @@ impl Window {
         }
 
         let unsent: usize = project.review.files.keys().map(|p| project.review.unsent_notes(p)).sum();
-        w.copy_count.set_text(&unsent.to_string());
-        w.copy_count.set_visible(unsent > 0);
+        w.post_count.set_text(&unsent.to_string());
+        w.post_count.set_visible(unsent > 0);
 
-        let reviewed = state.selected.as_deref().is_some_and(|p| project.approval(p) == ApprovalState::Approved);
-        if let Some(action) = w.window.lookup_action("reviewed").and_downcast::<gio::SimpleAction>() {
-            action.set_state(&reviewed.to_variant());
-        }
+        let open: usize = project.posted.iter().map(|e| e.open().count()).sum();
+        w.reviews_count.set_text(&open.to_string());
+        w.reviews_count.set_visible(open > 0);
+        w.reviews_button.set_tooltip_text(Some(&match open {
+            0 => "Posted Reviews (Ctrl+Shift+R)".to_owned(),
+            1 => "Posted Reviews: 1 comment not resolved yet (Ctrl+Shift+R)".to_owned(),
+            n => format!("Posted Reviews: {n} comments not resolved yet (Ctrl+Shift+R)"),
+        }));
     }
 
     fn render_content(&self) {
         let w = &self.0.w;
         let state = self.0.state.borrow();
         let mode = state.settings.diff_mode;
-        w.file_header.set_visible(false);
 
         let Some(project) = &state.project else {
             if let Some(error) = &state.error {
@@ -597,61 +673,40 @@ impl Window {
             }
             return;
         };
-
-        let Some(path) = state.selected.as_deref() else {
-            if !project.loaded {
-                w.content_stack.set_visible_child_name("loading");
-            } else if project.visible_entries(mode).next().is_none() {
-                let (title, description) = match mode {
-                    DiffMode::All => ("No Changes", "Nothing to review yet. Changes appear here as your agent works."),
-                    DiffMode::Staged => ("No Staged Changes", "Nothing has been staged yet."),
-                    DiffMode::Unstaged => ("No Unstaged Changes", "Every change is staged."),
-                };
-                w.clean_page.set_title(title);
-                w.clean_page.set_description(Some(description));
-                w.content_stack.set_visible_child_name("clean");
-            } else {
-                w.content_stack.set_visible_child_name("select");
-            }
+        if !project.loaded {
+            w.content_stack.set_visible_child_name("loading");
             return;
-        };
+        }
+        if project.visible_entries(mode).next().is_none() {
+            let (title, description) = match mode {
+                DiffMode::All => ("No Changes", "Nothing to review yet. Changes appear here as your agent works."),
+                DiffMode::Staged => ("No Staged Changes", "Nothing has been staged yet."),
+                DiffMode::Unstaged => ("No Unstaged Changes", "Every change is staged."),
+            };
+            w.clean_page.set_title(title);
+            w.clean_page.set_description(Some(description));
+            w.content_stack.set_visible_child_name("clean");
+            return;
+        }
 
-        let (name, dir) = util::split_path(path);
-        let entry = project.snapshot.status.entries.iter().find(|e| e.path == path);
-        let diff = project.snapshot.diffs().get(path);
-        let kind = entry.map(|e| e.kind_in(mode));
-        w.file_badge.set_text(kind.map_or("", |k| k.letter()));
-        w.file_badge.set_css_classes(&["status-letter", kind.map_or("modified", |k| k.css_class())]);
-        w.file_dir.set_text(&if dir.is_empty() { String::new() } else { format!("{dir}/") });
-        w.file_name.set_text(name);
-        let mut meta = Vec::new();
-        if let Some(diff) = diff.filter(|d| d.additions + d.deletions > 0) {
-            let counts: Vec<String> = [("+", diff.additions), ("−", diff.deletions)]
-                .iter()
-                .filter(|(_, n)| *n > 0)
-                .map(|(sign, n)| format!("{sign}{n}"))
-                .collect();
-            meta.push(counts.join(" "));
-        }
-        if let Some(entry) = entry {
-            meta.push(entry.kind_in(mode).label().to_owned());
-            let detail = staging_detail(entry);
-            if !detail.is_empty() {
-                meta.push(detail);
-            }
-        }
-        if let Some(from) = diff.and_then(FileDiff::renamed_from) {
-            meta.push(format!("from {from}"));
-        }
-        w.file_meta.set_text(&meta.join("  ·  "));
-        w.stale_chip.set_visible(project.approval(path) == ApprovalState::Stale);
-        w.file_header.set_visible(true);
-
-        match diff {
-            Some(diff) => w.diff.show(diff, project.review.notes(path)),
-            None => w.diff.show(&placeholder_diff(path), project.review.notes(path)),
-        }
-        w.content_stack.set_visible_child_name("diff");
+        let diffs = project.snapshot.diffs();
+        let files = project
+            .visible_entries(mode)
+            .map(|entry| {
+                let path = entry.path.as_str();
+                let diff = diffs.get(path);
+                FileData {
+                    path,
+                    kind: entry.kind_in(mode),
+                    meta: file_meta(entry, diff, mode),
+                    approval: project.approval(path),
+                    diff: diff.map_or_else(|| Cow::Owned(placeholder_diff(path)), Cow::Borrowed),
+                    notes: project.review.notes(path),
+                }
+            })
+            .collect();
+        w.review.set_files(files);
+        w.content_stack.set_visible_child_name(if w.files.first_path().is_some() { "diff" } else { "select" });
     }
 
     /// Re-renders everything that depends on the current file's review state.
@@ -666,16 +721,21 @@ impl Window {
 
     // ----- Navigation ----------------------------------------------------
 
+    /// Scrolls the review panel to a file.
     fn select(&self, path: Option<String>, from_list: bool) {
-        if self.0.state.borrow().selected == path {
-            return;
-        }
+        let Some(path) = path else { return };
         if !from_list {
-            self.0.w.files.select(path.as_deref());
+            self.0.w.files.select(Some(&path));
         }
-        self.0.state.borrow_mut().selected = path;
-        self.render_content();
-        self.render_toolbar();
+        self.0.state.borrow_mut().selected = Some(path.clone());
+        self.0.w.review.scroll_to(&path);
+        self.update_actions();
+    }
+
+    /// Selects the file the review panel moved to.
+    fn follow(&self, path: &str) {
+        self.0.state.borrow_mut().selected = Some(path.to_owned());
+        self.0.w.files.select(Some(path));
         self.update_actions();
     }
 
@@ -688,55 +748,61 @@ impl Window {
 
     // ----- Review --------------------------------------------------------
 
-    fn toggle_approve(&self) {
-        let (path, approved_now) = {
+    /// Approves a file, collapsing it and moving on to the next one, or takes the approval back.
+    fn toggle_approve(&self, path: &str) {
+        let approved_now = {
             let mut state = self.0.state.borrow_mut();
-            let Some(path) = state.selected.clone() else { return };
             let Some(project) = state.project.as_mut() else { return };
-            let approve = project.approval(&path) != ApprovalState::Approved;
-            let fingerprint = approve.then(|| project.fingerprint(&path).to_owned());
-            project.review.set_approved(&path, fingerprint.as_deref(), app_core::now());
+            let approve = project.approval(path) != ApprovalState::Approved;
+            let fingerprint = approve.then(|| project.fingerprint(path).to_owned());
+            project.review.set_approved(path, fingerprint.as_deref(), app_core::now());
             project.save_review();
-            (path, approve)
+            approve
         };
-        self.render_review_change(&path);
+        self.render_review_change(path);
         if approved_now {
-            match self.0.w.files.next_unreviewed(Some(&path)) {
+            self.0.w.review.collapse(path);
+            match self.0.w.files.next_unreviewed(Some(path)) {
                 Some(next) => self.select(Some(next), false),
                 None => self.toast("All files reviewed"),
             }
         }
     }
 
-    fn add_note(&self, anchor: Option<LineAnchor>, body: &str) {
-        let path = {
-            let mut state = self.0.state.borrow_mut();
-            let Some(path) = state.selected.clone() else { return };
-            let Some(project) = state.project.as_mut() else { return };
-            let now = app_core::now();
-            project.review.add_note(&path, anchor, body, now);
-            // Commenting on a file counts as reviewing it.
-            if project.approval(&path) != ApprovalState::Approved {
-                let fingerprint = project.fingerprint(&path).to_owned();
-                project.review.set_approved(&path, Some(&fingerprint), now);
-            }
-            project.save_review();
-            path
-        };
-        self.render_review_change(&path);
+    fn open_composer(&self, lines: bool) {
+        let selected = self.0.state.borrow().selected.clone();
+        if let Some(path) = selected {
+            self.0.w.review.open_composer(&path, lines);
+        }
     }
 
-    fn delete_note(&self, id: u64) {
-        let (path, note) = {
+    fn add_note(&self, path: &str, anchor: Option<LineAnchor>, body: &str) {
+        {
             let mut state = self.0.state.borrow_mut();
-            let Some(path) = state.selected.clone() else { return };
             let Some(project) = state.project.as_mut() else { return };
-            let note = project.review.notes(&path).iter().find(|n| n.id == id).cloned();
-            project.review.remove_note(&path, id);
+            let now = app_core::now();
+            project.review.add_note(path, anchor, body, now);
+            // Commenting on a file counts as reviewing it.
+            if project.approval(path) != ApprovalState::Approved {
+                let fingerprint = project.fingerprint(path).to_owned();
+                project.review.set_approved(path, Some(&fingerprint), now);
+            }
             project.save_review();
-            (path, note)
+        }
+        self.render_review_change(path);
+    }
+
+    fn delete_note(&self, path: &str, id: u64) {
+        let note = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            let note = project.review.notes(path).iter().find(|n| n.id == id).cloned();
+            project.review.remove_note(path, id);
+            project.save_review();
+            note
         };
-        self.render_review_change(&path);
+        self.render_review_change(path);
+        let path = path.to_owned();
 
         let Some(note) = note else { return };
         let toast = adw::Toast::builder().title("Comment deleted").button_label("Undo").build();
@@ -782,29 +848,115 @@ impl Window {
 
     // ----- Feedback ------------------------------------------------------
 
+    /// Feedback on the unsent comments and the reviewed files.
+    fn feedback(&self) -> Option<Feedback> {
+        let state = self.0.state.borrow();
+        let project = state.project.as_ref()?;
+        let files: Vec<FileInfo<'_>> = project
+            .snapshot
+            .status
+            .entries
+            .iter()
+            .map(|e| FileInfo {
+                path: &e.path,
+                diff: project.snapshot.all.get(&e.path),
+                approval: project.approval(&e.path),
+            })
+            .collect();
+        Some(feedback::build(&project.review, &files, &Options::default()))
+    }
+
     fn copy_feedback(&self) {
-        let feedback = {
-            let state = self.0.state.borrow();
-            let Some(project) = &state.project else { return };
-            let files: Vec<FileInfo<'_>> = project
-                .snapshot
-                .status
-                .entries
-                .iter()
-                .map(|e| FileInfo {
-                    path: &e.path,
-                    diff: project.snapshot.all.get(&e.path),
-                    approval: project.approval(&e.path),
-                })
-                .collect();
-            feedback::build(&project.review, &files, &Options::default())
-        };
+        let Some(feedback) = self.feedback() else { return };
         if feedback.is_empty() {
             self.toast("Nothing to copy yet: comment on or review some files first");
             return;
         }
         self.0.w.window.clipboard().set_text(&feedback.text);
         self.mark_sent(feedback.note_ids);
+    }
+
+    /// Queues the unsent comments for the agent to pull through the MCP server.
+    fn post_review(&self) {
+        let Some(feedback) = self.feedback() else { return };
+        let ids = feedback.note_ids;
+        if ids.is_empty() {
+            self.toast("Nothing to post yet: comment on some lines or files first");
+            return;
+        }
+        let posted = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            // In the order of the feedback: files as listed, then comments as written.
+            let comments: Vec<_> = ids
+                .iter()
+                .filter_map(|&id| {
+                    project.review.files.iter().find_map(|(path, file)| {
+                        let note = file.notes.iter().find(|n| n.id == id)?;
+                        Some((id, path.clone(), note.anchor.clone(), note.body.clone()))
+                    })
+                })
+                .collect();
+            let now = app_core::now();
+            let posted = project.queue.post(comments, now);
+            if posted.is_ok() {
+                project.review.set_sent(&ids, Some(now));
+                project.save_review();
+                project.posted = project.queue.load();
+            }
+            posted
+        };
+        let review = match posted {
+            Ok(review) => review,
+            Err(err) => {
+                self.toast(&format!("Could not post the review: {err}"));
+                return;
+            }
+        };
+        self.render();
+
+        let toast = adw::Toast::builder()
+            .title("Review posted. Ask your agent to pull it")
+            .button_label("Undo")
+            .timeout(5)
+            .build();
+        let weak = self.weak();
+        toast.connect_button_clicked(move |_| {
+            let Some(inner) = weak.upgrade() else { return };
+            Self(inner).withdraw_review(review.id, &ids);
+        });
+        self.0.w.toasts.add_toast(toast);
+    }
+
+    /// Takes back a posted review, unless the agent has pulled it already.
+    fn withdraw_review(&self, id: u64, note_ids: &[u64]) {
+        let withdrawn = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            let withdrawn = project.queue.withdraw(id);
+            if let Ok(true) = withdrawn {
+                project.review.set_sent(note_ids, None);
+                project.save_review();
+                project.posted = project.queue.load();
+            }
+            withdrawn
+        };
+        match withdrawn {
+            Ok(true) => self.render(),
+            Ok(false) => self.toast("Your agent has already pulled this review"),
+            Err(err) => self.toast(&format!("Could not take the review back: {err}")),
+        }
+    }
+
+    fn show_reviews(&self) {
+        self.update_reviews_dialog();
+        self.0.w.reviews_dialog.present(&self.0.w.window);
+    }
+
+    fn update_reviews_dialog(&self) {
+        let state = self.0.state.borrow();
+        let posted = state.project.as_ref().map_or(&[][..], |p| &p.posted);
+        self.0.w.reviews_dialog.set_entries(posted, app_core::now());
     }
 
     /// Marks copied comments as sent and confirms with an undoable toast.
@@ -831,6 +983,28 @@ impl Window {
         }
         self.0.w.toasts.add_toast(toast);
     }
+}
+
+/// The header details of a file: line counts, kind of change, staging and rename.
+fn file_meta(entry: &StatusEntry, diff: Option<&FileDiff>, mode: DiffMode) -> String {
+    let mut meta = Vec::new();
+    if let Some(diff) = diff.filter(|d| d.additions + d.deletions > 0) {
+        let counts: Vec<String> = [("+", diff.additions), ("−", diff.deletions)]
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(sign, n)| format!("{sign}{n}"))
+            .collect();
+        meta.push(counts.join(" "));
+    }
+    meta.push(entry.kind_in(mode).label().to_owned());
+    let detail = staging_detail(entry);
+    if !detail.is_empty() {
+        meta.push(detail);
+    }
+    if let Some(from) = diff.and_then(FileDiff::renamed_from) {
+        meta.push(format!("from {from}"));
+    }
+    meta.join("  ·  ")
 }
 
 fn staging_detail(entry: &StatusEntry) -> String {
@@ -877,25 +1051,43 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     progress.set_valign(gtk::Align::Center);
     progress.set_tooltip_text(Some("Files approved in this view"));
 
-    let copy_count = gtk::Label::new(None);
-    copy_count.add_css_class("count-badge");
-    copy_count.set_valign(gtk::Align::Center);
-    let copy_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    copy_content.append(&gtk::Image::from_icon_name("edit-copy-symbolic"));
-    copy_content.append(&gtk::Label::new(Some("Copy Feedback")));
-    copy_content.append(&copy_count);
-    let copy_button = gtk::Button::builder()
-        .child(&copy_content)
-        .tooltip_text("Copy unsent comments as a prompt for your agent (Ctrl+Shift+C)")
-        .action_name("win.copy-feedback")
+    let post_count = gtk::Label::new(None);
+    post_count.add_css_class("count-badge");
+    post_count.set_valign(gtk::Align::Center);
+    let post_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    post_content.append(&gtk::Image::from_icon_name("mail-send-symbolic"));
+    post_content.append(&gtk::Label::new(Some("Post Review")));
+    post_content.append(&post_count);
+    let post_menu = gio::Menu::new();
+    post_menu.append(Some("Copy Feedback Instead"), Some("win.copy-feedback"));
+    let post_button = adw::SplitButton::builder()
+        .child(&post_content)
+        .menu_model(&post_menu)
+        .tooltip_text("Post unsent comments for your agent to pull (Ctrl+Shift+P)")
+        .dropdown_tooltip("More Ways to Send")
+        .action_name("win.post-review")
         .build();
-    copy_button.add_css_class("suggested-action");
-    copy_button.add_css_class("toolbar-button");
+    post_button.add_css_class("suggested-action");
+    post_button.add_css_class("toolbar-button");
+
+    let reviews_count = gtk::Label::new(None);
+    reviews_count.add_css_class("open-count");
+    reviews_count.set_valign(gtk::Align::Center);
+    let reviews_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    reviews_content.append(&gtk::Image::from_icon_name("view-list-bullet-symbolic"));
+    reviews_content.append(&reviews_count);
+    let reviews_button = gtk::Button::builder()
+        .child(&reviews_content)
+        .tooltip_text("Posted Reviews (Ctrl+Shift+R)")
+        .action_name("win.show-reviews")
+        .build();
+    reviews_button.add_css_class("toolbar-button");
 
     let review_actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     review_actions.append(&progress);
     review_actions.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    review_actions.append(&copy_button);
+    review_actions.append(&reviews_button);
+    review_actions.append(&post_button);
 
     let main_menu = gio::Menu::new();
     let section = gio::Menu::new();
@@ -977,57 +1169,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     sidebar.bind_property("visible", &sidebar_toggle, "active").bidirectional().sync_create().build();
 
     // ----- Main area -----
-    let reviewed = gtk::CheckButton::builder()
-        .action_name("win.reviewed")
-        .tooltip_text("Reviewed: check to mark this file done and open the next one (Ctrl+Shift+A)")
-        .valign(gtk::Align::Center)
-        .build();
-    reviewed.add_css_class("review-check");
-    let file_badge = util::label("", &["status-letter"]);
-    let file_dir = util::label("", &["file-header-dir"]);
-    file_dir.set_ellipsize(gtk::pango::EllipsizeMode::Start);
-    let file_name = util::label("", &["file-header-name"]);
-    let file_comment = gtk::Button::builder()
-        .icon_name("chat-message-new-symbolic")
-        .tooltip_text("Comment on This File")
-        .action_name("win.comment-file")
-        .valign(gtk::Align::Center)
-        .build();
-    file_comment.add_css_class("flat");
-    file_comment.add_css_class("icon-button");
-    let file_meta = util::label("", &["file-header-meta"]);
-    file_meta.set_margin_start(8);
-    file_meta.set_hexpand(true);
-    file_meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let stale_chip = util::label("Changed since review", &["chip", "warning-chip"]);
-    stale_chip.set_valign(gtk::Align::Center);
-    let prev = gtk::Button::builder()
-        .icon_name("go-up-symbolic")
-        .tooltip_text("Previous File (Alt+↑)")
-        .action_name("win.prev-file")
-        .build();
-    let next = gtk::Button::builder()
-        .icon_name("go-down-symbolic")
-        .tooltip_text("Next File (Alt+↓)")
-        .action_name("win.next-file")
-        .build();
-    for button in [&prev, &next] {
-        button.add_css_class("flat");
-        button.add_css_class("small-button");
-    }
-    let diff = DiffView::new();
-    let file_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    file_header.add_css_class("file-header");
-    file_header.append(&reviewed);
-    file_header.append(&file_badge);
-    file_header.append(&file_dir);
-    file_header.append(&file_name);
-    file_header.append(&file_comment);
-    file_header.append(diff.history_button());
-    file_header.append(&file_meta);
-    file_header.append(&stale_chip);
-    file_header.append(&prev);
-    file_header.append(&next);
+    let review = ReviewPanel::new();
 
     let open_button =
         gtk::Button::builder().label("Open Folder…").halign(gtk::Align::Center).action_name("win.open-folder").build();
@@ -1073,11 +1215,10 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     content_stack.add_named(&loading, Some("loading"));
     content_stack.add_named(&clean_page, Some("clean"));
     content_stack.add_named(&select_page, Some("select"));
-    content_stack.add_named(diff.widget(), Some("diff"));
+    content_stack.add_named(review.widget(), Some("diff"));
 
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.add_css_class("main-area");
-    main.append(&file_header);
     main.append(&content_stack);
 
     let paned = gtk::Paned::builder()
@@ -1119,16 +1260,13 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         files,
         sidebar_stack,
         content_stack,
-        file_header,
-        file_badge,
-        file_dir,
-        file_name,
-        file_meta,
-        stale_chip,
-        diff,
+        review,
         review_actions,
         progress,
-        copy_count,
+        post_count,
+        reviews_button,
+        reviews_count,
+        reviews_dialog: ReviewsDialog::new(),
         error_page,
         clean_page,
     }

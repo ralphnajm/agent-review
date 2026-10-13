@@ -8,15 +8,16 @@
   <description>
     <p>
       Agent Review shows the uncommitted changes in your Git projects while a coding agent works on
-      them. Mark files as reviewed, comment on specific lines, and copy the feedback to paste back
-      into the agent.
+      them. Mark files as reviewed, comment on specific lines, and hand the feedback back to the
+      agent: post it for the agent to pull through MCP, or copy it to paste.
     </p>
     <ul>
       <li>Switch between projects at any time</li>
       <li>Browse all, staged or unstaged changes with syntax highlighting</li>
       <li>Updates live as files change</li>
       <li>Reviewed files are flagged when they change afterwards</li>
-      <li>Copy your feedback as Markdown, ready to paste into your agent</li>
+      <li>Post your review for your agent to pull, and see which comments it has resolved</li>
+      <li>Or copy your feedback as Markdown, ready to paste into your agent</li>
     </ul>
   </description>
   <launchable type="desktop-id">io.github.ralphnajm.AgentReview.desktop</launchable>
@@ -36,6 +37,7 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.5.0" date="2026-10-13"/>
     <release version="0.4.0" date="2026-10-12"/>
     <release version="0.3.0" date="2026-10-12"/>
     <release version="0.2.0" date="2026-10-12"/>

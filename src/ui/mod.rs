@@ -3,6 +3,9 @@
 mod diff_view;
 mod file_list;
 mod project_switcher;
+mod review_panel;
+mod reviews_dialog;
+mod scroller;
 mod util;
 mod window;
 

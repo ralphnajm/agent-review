@@ -27,6 +27,30 @@ pub struct Hunk {
     pub lines: Vec<DiffLine>,
 }
 
+impl Hunk {
+    /// The `(start, count)` ranges of the old and new sides from the header.
+    fn ranges(&self) -> ((u32, u32), (u32, u32)) {
+        parse_hunk_header(self.header.strip_prefix("@@ ").unwrap_or(&self.header))
+    }
+}
+
+/// Unchanged lines a diff leaves out: before a hunk, or after the last one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gap {
+    /// The hunk the gap comes before, or the number of hunks for the end of the file.
+    pub before: usize,
+    pub old_start: u32,
+    pub new_start: u32,
+    pub len: u32,
+}
+
+impl Gap {
+    /// The last line of the gap on the new side.
+    pub fn new_end(&self) -> u32 {
+        self.new_start + self.len.saturating_sub(1)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileDiff {
     pub old_path: Option<String>,
@@ -83,6 +107,51 @@ impl FileDiff {
             }
         }
         hasher.hex()
+    }
+
+    /// Whether the diff leaves out unchanged lines that could be shown: the
+    /// file has content on both sides.
+    pub fn has_gaps(&self) -> bool {
+        !self.is_new && !self.is_deleted && !self.is_binary && !self.hunks.is_empty()
+    }
+
+    /// The unchanged lines left out before each hunk and, given the number of
+    /// lines of the new side, after the last one. Empty gaps are skipped.
+    pub fn gaps(&self, new_len: Option<u32>) -> Vec<Gap> {
+        if !self.has_gaps() {
+            return Vec::new();
+        }
+        // The first line after the previous hunk, on each side. An empty range
+        // starts at the line before it.
+        let after = |(start, count): (u32, u32)| if count == 0 { start + 1 } else { start + count };
+        let first = |(start, count): (u32, u32)| if count == 0 { start + 1 } else { start };
+        let (mut old_next, mut new_next) = (1, 1);
+        let mut gaps = Vec::new();
+        for (before, hunk) in self.hunks.iter().enumerate() {
+            let (old, new) = hunk.ranges();
+            let len = first(new).saturating_sub(new_next);
+            if len > 0 {
+                gaps.push(Gap { before, old_start: old_next, new_start: new_next, len });
+            }
+            (old_next, new_next) = (after(old), after(new));
+        }
+        if let Some(total) = new_len {
+            let len = (total + 1).saturating_sub(new_next);
+            if len > 0 {
+                gaps.push(Gap { before: self.hunks.len(), old_start: old_next, new_start: new_next, len });
+            }
+        }
+        gaps
+    }
+
+    /// Whether `lines`, the new side of the file, is the one this diff was
+    /// made from: its unchanged and added lines are where the diff has them.
+    pub fn matches_new_side<S: AsRef<str>>(&self, lines: &[S]) -> bool {
+        self.lines().filter(|l| l.kind != LineKind::Removed).all(|line| {
+            line.new_no
+                .and_then(|n| lines.get(usize::try_from(n).ok()?.checked_sub(1)?))
+                .is_some_and(|text| text.as_ref() == line.text)
+        })
     }
 
     /// All lines of all hunks, in order.
@@ -296,15 +365,21 @@ fn marker_path(raw: &str, prefix: &str) -> Option<String> {
 }
 
 fn parse_hunk_ranges(rest: &str) -> (u32, u32) {
+    let ((old, _), (new, _)) = parse_hunk_header(rest);
+    (old, new)
+}
+
+/// The `(start, count)` of each side from a hunk header without its leading `@@ `.
+fn parse_hunk_header(rest: &str) -> ((u32, u32), (u32, u32)) {
     let mut parts = rest.split(' ');
-    let start = |part: Option<&str>, sign: char| {
-        part.and_then(|p| p.strip_prefix(sign))
-            .and_then(|p| p.split(',').next())
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(1)
+    let range = |part: Option<&str>, sign: char| {
+        let mut numbers = part.and_then(|p| p.strip_prefix(sign)).unwrap_or("1").split(',');
+        let start = numbers.next().and_then(|n| n.parse().ok()).unwrap_or(1);
+        let count = numbers.next().map_or(Some(1), |n| n.parse().ok()).unwrap_or(1);
+        (start, count)
     };
-    let old = start(parts.next(), '-');
-    let new = start(parts.next(), '+');
+    let old = range(parts.next(), '-');
+    let new = range(parts.next(), '+');
     (old, new)
 }
 
@@ -392,6 +467,51 @@ diff --git \"a/caf\\303\\251.txt\" \"b/caf\\303\\251.txt\"
 old mode 100644
 new mode 100755
 ";
+
+    #[test]
+    fn finds_the_unchanged_lines_between_hunks() {
+        let diff = &parse(SAMPLE)[0];
+        assert_eq!(diff.gaps(None), [Gap { before: 1, old_start: 5, new_start: 6, len: 5 }]);
+        assert_eq!(
+            diff.gaps(Some(20)),
+            [
+                Gap { before: 1, old_start: 5, new_start: 6, len: 5 },
+                Gap { before: 2, old_start: 12, new_start: 13, len: 8 },
+            ]
+        );
+        // Nothing to add to new, deleted or binary files.
+        assert!(parse(SAMPLE)[1..].iter().all(|d| d.gaps(Some(10)).is_empty()));
+    }
+
+    #[test]
+    fn gaps_around_a_change_in_the_middle() {
+        let diff = &parse("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -2,7 +2,7 @@\n b\n c\n d\n-e\n+E\n f\n g\n h\n")[0];
+        assert_eq!(
+            diff.gaps(Some(10)),
+            [
+                Gap { before: 0, old_start: 1, new_start: 1, len: 1 },
+                Gap { before: 1, old_start: 9, new_start: 9, len: 2 },
+            ]
+        );
+        let new: Vec<&str> = "a b c d E f g h i j".split(' ').collect();
+        assert!(diff.matches_new_side(&new));
+        let edited: Vec<&str> = "a b c d e f g h i j".split(' ').collect();
+        assert!(!diff.matches_new_side(&edited));
+        assert!(!diff.matches_new_side(&new[..5]));
+    }
+
+    #[test]
+    fn gaps_around_a_deletion() {
+        // Line 3 of four removed: the new side's range is empty and starts at the line before.
+        let diff = &parse("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -3 +2,0 @@\n-c\n")[0];
+        assert_eq!(
+            diff.gaps(Some(3)),
+            [
+                Gap { before: 0, old_start: 1, new_start: 1, len: 2 },
+                Gap { before: 1, old_start: 4, new_start: 3, len: 1 },
+            ]
+        );
+    }
 
     #[test]
     fn parses_hunks_and_line_numbers() {

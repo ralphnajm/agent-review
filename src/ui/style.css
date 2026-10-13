@@ -13,6 +13,20 @@
   box-shadow: inset 0 0 0 1px alpha(currentColor, 0.1);
 }
 .topbar button.toolbar-button:not(.suggested-action):hover { background: alpha(currentColor, 0.1); }
+.topbar splitbutton.toolbar-button > button,
+.topbar splitbutton.toolbar-button > menubutton > button { min-height: 28px; font-weight: 500; }
+.topbar splitbutton.toolbar-button > button { padding: 0 10px; border-radius: 6px 0 0 6px; }
+.topbar splitbutton.toolbar-button > menubutton > button { padding: 0 6px; border-radius: 0 6px 6px 0; }
+.topbar .open-count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: alpha(@accent_bg_color, 0.2);
+  color: @accent_color;
+  font-size: 0.8em;
+  font-weight: 800;
+  font-feature-settings: "tnum";
+}
 
 .review-check { margin-right: 4px; }
 
@@ -26,6 +40,7 @@
   color: alpha(currentColor, 0.75);
 }
 .status-pill.done { background: alpha(@success_color, 0.16); color: @success_color; }
+.status-pill.picked-up { background: alpha(@accent_bg_color, 0.16); color: @accent_color; }
 
 .count-badge {
   min-width: 18px;
@@ -114,11 +129,16 @@ paned > separator { background: alpha(currentColor, 0.1); min-width: 1px; }
 
 /* ----- Main area ----- */
 .main-area { background: @view_bg_color; }
+/* One section per file; its header sticks to the top while the diff scrolls past. */
+filesection { border-bottom: 1px solid alpha(currentColor, 0.1); }
 .file-header {
   min-height: 36px;
-  padding: 0 8px 0 14px;
-  border-bottom: 1px solid alpha(currentColor, 0.1);
+  padding: 0 8px 0 6px;
+  /* Opaque: a stuck header covers the code under it. */
+  background: mix(@view_bg_color, @view_fg_color, 0.035);
 }
+filesection:not(.collapsed) > .file-header { border-bottom: 1px solid alpha(currentColor, 0.1); }
+filesection.collapsed .file-header-name { opacity: 0.6; }
 .file-header-dir { opacity: 0.55; }
 .file-header-name { font-weight: 700; }
 .file-header-meta { font-size: 0.85em; opacity: 0.6; font-feature-settings: "tnum"; }
@@ -148,6 +168,8 @@ button.composer-button {
 
 /* ----- Inline comments ----- */
 .comment-thread { margin: 6px 0 10px 0; }
+/* The arrow on a row of hidden lines; clicking the row shows them. */
+.gap-expander { color: @accent_color; margin-right: 10px; min-width: 16px; }
 .comment-card, .comment-composer {
   padding: 10px 12px;
   border-radius: 8px;

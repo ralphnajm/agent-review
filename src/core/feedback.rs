@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use crate::core::diff::FileDiff;
-use crate::core::review::{ApprovalState, Note, ReviewState};
+use crate::core::review::{ApprovalState, LineAnchor, Note, ReviewState};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -106,15 +106,20 @@ pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) ->
 }
 
 fn write_note(out: &mut String, note: &Note, diff: Option<&FileDiff>) {
-    match &note.anchor {
+    let changed = note.anchor.as_ref().is_some_and(|a| !a.is_current(diff));
+    write_comment(out, note.anchor.as_ref(), &note.body, if changed { " (changed since)" } else { "" });
+}
+
+/// Writes one comment as a Markdown list item; `tag` follows its label.
+pub fn write_comment(out: &mut String, anchor: Option<&LineAnchor>, body: &str, tag: &str) {
+    match anchor {
         Some(anchor) => {
-            let changed = if anchor.is_current(diff) { "" } else { " (changed since)" };
             let mut lines = anchor.text.lines();
             if let (Some(only), None) = (lines.next(), lines.next()) {
                 let code = code_span(only.get(1..).unwrap_or_default());
-                let _ = writeln!(out, "- **{}**{changed}: {code}", anchor.label());
+                let _ = writeln!(out, "- **{}**{tag}: {code}", anchor.label());
             } else {
-                let _ = writeln!(out, "- **{}**{changed}:", anchor.label());
+                let _ = writeln!(out, "- **{}**{tag}:", anchor.label());
                 out.push_str("  ```diff\n");
                 for line in anchor.text.lines() {
                     let _ = writeln!(out, "  {line}");
@@ -122,9 +127,11 @@ fn write_note(out: &mut String, note: &Note, diff: Option<&FileDiff>) {
                 out.push_str("  ```\n");
             }
         }
-        None => out.push_str("- **File**\n"),
+        None => {
+            let _ = writeln!(out, "- **File**{tag}");
+        }
     }
-    for line in note.body.lines() {
+    for line in body.lines() {
         if line.trim().is_empty() {
             out.push('\n');
         } else {
@@ -149,7 +156,7 @@ fn code_span(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::diff;
-    use crate::core::review::{LineAnchor, Side};
+    use crate::core::review::Side;
 
     fn sample_diff() -> FileDiff {
         diff::untracked("src/main.rs", b"fn main() {\n    let x = 1;\n}\n")

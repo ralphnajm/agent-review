@@ -6,6 +6,8 @@ pub mod diff;
 pub mod feedback;
 pub mod git;
 pub mod hash;
+pub mod mcp;
+pub mod queue;
 pub mod review;
 pub mod status;
 pub mod store;

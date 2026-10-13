@@ -96,6 +96,12 @@ fn review_file(path: &Path) -> PathBuf {
     data_dir().join("reviews").join(format!("{key}.json"))
 }
 
+/// Where the reviews posted for the repository at `root` are queued.
+pub fn queue_dir(root: &Path) -> PathBuf {
+    let key = hash::hex(root.as_os_str().as_encoded_bytes());
+    data_dir().join("queue").join(key)
+}
+
 fn config_dir() -> PathBuf {
     xdg_dir("XDG_CONFIG_HOME", ".config").join(APP_DIR)
 }
@@ -111,13 +117,13 @@ fn xdg_dir(variable: &str, fallback: &str) -> PathBuf {
         .unwrap_or_else(|| std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(fallback))
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+pub fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
 /// Writes atomically so a crash never leaves a truncated file behind.
-fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;

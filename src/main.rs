@@ -7,5 +7,13 @@ mod core;
 mod ui;
 
 fn main() -> gtk::glib::ExitCode {
+    // `agent-review --mcp` is the MCP server agents pull posted reviews from; it needs no display.
+    if std::env::args().nth(1).as_deref() == Some("--mcp") {
+        if let Err(err) = core::mcp::serve() {
+            eprintln!("agent-review: {err:#}");
+            return gtk::glib::ExitCode::FAILURE;
+        }
+        return gtk::glib::ExitCode::SUCCESS;
+    }
     application::run()
 }

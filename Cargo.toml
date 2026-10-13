@@ -1,9 +1,9 @@
 [package]
 name = "agent-review"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.99"
-description = "Review the changes coding agents make and copy your feedback back to them"
+description = "Review the changes coding agents make and hand your feedback back to them"
 license = "MIT"
 repository = "https://github.com/ralphnajm/agent-review"
 readme = "README.md"
@@ -59,7 +59,7 @@ maintainer = "Ralph Najem <me@ralphnajem.com>"
 section = "devel"
 priority = "optional"
 depends = "$auto, git"
-extended-description = "A native GTK app for reviewing the uncommitted changes coding agents make: browse staged and unstaged changes per project, comment on lines and files, mark files as reviewed, and copy the feedback to paste into your agent."
+extended-description = "A native GTK app for reviewing the uncommitted changes coding agents make: browse staged and unstaged changes per project, comment on lines and files, mark files as reviewed, and post the feedback for your agent to pull or copy it to paste."
 assets = [
     ["target/release/agent-review", "usr/bin/", "755"],
     ["data/io.github.ralphnajm.AgentReview.desktop", "usr/share/applications/", "644"],

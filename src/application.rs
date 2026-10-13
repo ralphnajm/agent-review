@@ -70,7 +70,7 @@ fn show_about(app: &adw::Application) {
         .application_name(config::APP_NAME)
         .application_icon(config::APP_ID)
         .version(config::VERSION)
-        .comments("Review the changes coding agents make and copy your feedback back to them.")
+        .comments("Review the changes coding agents make and hand your feedback back to them.")
         .website(config::REPOSITORY)
         .license_type(gtk::License::MitX11)
         .build();

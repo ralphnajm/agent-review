@@ -2,7 +2,7 @@
 Type=Application
 Name=Agent Review
 GenericName=Code Review
-Comment=Review the changes coding agents make and copy your feedback back to them
+Comment=Review the changes coding agents make and hand your feedback back to them
 Exec=agent-review %F
 Icon=io.github.ralphnajm.AgentReview
 Terminal=false

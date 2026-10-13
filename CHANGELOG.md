@@ -5,6 +5,39 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.5.0] - 2026-10-13
+
+### Added
+
+- **Post Review** hands your comments to your agent without copy and paste: your agent pulls
+  them through Agent Review's MCP server (`agent-review --mcp`; see "Connecting your agent"
+  in the README) and marks each comment resolved once it has addressed it. Undo takes a
+  review back until the agent pulls it.
+- **Posted reviews** (Ctrl+Shift+R, or the list button in the top bar) shows every review you
+  posted, with each comment marked *Waiting*, *Picked up* or *Resolved*, and updates live as
+  your agent works. The button counts the comments not resolved yet.
+- The unchanged lines a diff leaves out are no longer out of reach: click the arrow on a grey
+  row to show them, whether at the start of the file, between two changes or at its end.
+
+### Changed
+
+- Copy Feedback moved to the arrow next to Post Review; Ctrl+Shift+C still copies.
+- The main panel now shows every changed file in one scrolling view, so you can read through
+  all the changes in one go. Each file's header stays at the top while you scroll through it.
+- Ticking a file's "Reviewed" checkbox collapses it to its header and scrolls to the next
+  file to review. Click a header to collapse or expand a file yourself. Reviewed files start
+  collapsed unless they have comments still to send, and a file that changes after you
+  reviewed it opens again.
+- Clicking a file in the file panel scrolls to it, expanding it if needed. As you scroll, the
+  file panel follows along.
+- Find (Ctrl+F) searches every expanded file, moving on to the next file when one runs out of
+  matches.
+
+### Removed
+
+- The previous and next file buttons next to the file name. Alt+↑ and Alt+↓ still move
+  between files.
+
 ## [0.4.0] - 2026-10-12
 
 ### Changed
