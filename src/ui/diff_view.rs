@@ -2,8 +2,9 @@
 //! threads shown inline below the lines they refer to. Comments already sent
 //! to the agent are kept out of the diff, in a history panel above it.
 //!
-//! The view is as tall as the diff: it scrolls with the other files' diffs
-//! in the review panel's `Scroller`.
+//! The view takes the diff's full height and scrolls with the other files'
+//! diffs in the review panel's `Scroller`, but is only allocated the part on
+//! screen (see `Slice`), so long diffs stay fast.
 //!
 //! The buffer holds the diff lines without their `+`/`-` prefixes so the
 //! file's language highlighting applies; old/new line numbers and the change
@@ -28,7 +29,7 @@ use sourceview5::prelude::*;
 use crate::core::align::{self, Run};
 use crate::core::diff::{FileDiff, Gap, LineKind};
 use crate::core::review::{Author, LineAnchor, Note, Side};
-use crate::ui::scroller::Scroller;
+use crate::ui::scroller::{Scroller, Slice};
 use crate::ui::util;
 
 /// Comment cards are not stretched wider than this.
@@ -192,7 +193,9 @@ impl DiffView {
         view.set_bottom_margin(12);
         view.add_css_class("diff-view");
 
-        let overlay = gtk::Overlay::builder().child(&view).overflow(gtk::Overflow::Hidden).build();
+        // Lays out and draws only the lines on screen.
+        let slice = Slice::new(&view, scroller);
+        let overlay = gtk::Overlay::builder().child(&slice).overflow(gtk::Overflow::Hidden).build();
         let composer = build_composer();
         composer.root.set_visible(false);
         overlay.add_overlay(&composer.root);
@@ -216,7 +219,7 @@ impl DiffView {
         let frame = gtk::Box::builder().css_classes(["line-frame"]).can_target(false).visible(false).build();
         overlay.add_overlay(&frame);
         let button = gtk::Image::builder()
-            .icon_name("chat-message-new-symbolic")
+            .icon_name("list-add-symbolic")
             .css_classes(["line-comment-button"])
             .cursor(&gtk::gdk::Cursor::from_name("pointer", None).expect("the pointer cursor"))
             .visible(false)
@@ -717,8 +720,9 @@ impl DiffView {
     fn line_at_view_y(&self, y: f64) -> i32 {
         let view = &self.0.view;
         let (_, origin) = view.buffer_to_window_coords(gtk::TextWindowType::Widget, 0, 0);
+        // The view is only as tall as the part of the diff on screen, maybe none of it.
         #[allow(clippy::cast_possible_truncation)]
-        let y = y.clamp(0.0, f64::from(view.height() - 1)) as i32;
+        let y = y.clamp(0.0, f64::from((view.height() - 1).max(0))) as i32;
         view.line_at_y(y - origin).0.line()
     }
 

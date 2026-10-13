@@ -5,6 +5,18 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.7.1] - 2026-10-13
+
+### Changed
+
+- The button for commenting on lines shows a plus again: press it to comment on the line, or drag it to pick more lines.
+- The **Post Review** button no longer shows an icon.
+
+### Fixed
+
+- Long diffs no longer slow the app down: with thousands of lines open, scrolling, selecting and resizing the window
+  stay smooth, as only the lines on screen are laid out and drawn.
+
 ## [0.7.0] - 2026-10-13
 
 ### Added

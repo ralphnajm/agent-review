@@ -161,7 +161,7 @@ button.composer-button {
   color: @accent_fg_color;
   border-radius: 5px;
   padding: 2px;
-  -gtk-icon-size: 14px;
+  -gtk-icon-size: 12px;
 }
 /* Around the lines being picked or commented on. */
 .line-frame {

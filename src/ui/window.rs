@@ -1049,7 +1049,6 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     post_count.add_css_class("count-badge");
     post_count.set_valign(gtk::Align::Center);
     let post_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    post_content.append(&gtk::Image::from_icon_name("mail-send-symbolic"));
     post_content.append(&gtk::Label::new(Some("Post Review")));
     post_content.append(&post_count);
     let post_menu = gio::Menu::new();
