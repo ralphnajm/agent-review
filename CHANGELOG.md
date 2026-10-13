@@ -5,6 +5,12 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.8.1] - 2026-10-13
+
+### Fixed
+
+- Checking a file's Reviewed box collapses it in place instead of also scrolling to the next file.
+
 ## [0.8.0] - 2026-10-13
 
 ### Added

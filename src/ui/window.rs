@@ -179,7 +179,7 @@ impl Window {
         self.add_action("reviewed", |w| {
             let selected = w.0.state.borrow().selected.clone();
             if let Some(path) = selected {
-                w.toggle_approve(&path);
+                w.toggle_approve(&path, true);
             }
         });
         self.add_action("comment", |w| w.open_composer(true));
@@ -338,7 +338,8 @@ impl Window {
         let weak = self.weak();
         w.review.connect_reviewed(move |path| {
             if let Some(inner) = weak.upgrade() {
-                Self(inner).toggle_approve(path);
+                // The file collapses in place, which already brings the next one up.
+                Self(inner).toggle_approve(path, false);
             }
         });
         let weak = self.weak();
@@ -759,8 +760,9 @@ impl Window {
 
     // ----- Review --------------------------------------------------------
 
-    /// Approves a file, collapsing it and moving on to the next one, or takes the approval back.
-    fn toggle_approve(&self, path: &str) {
+    /// Approves a file, collapsing it and, with `advance`, moving on to the next
+    /// one, or takes the approval back.
+    fn toggle_approve(&self, path: &str, advance: bool) {
         let approved_now = {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = state.project.as_mut() else { return };
@@ -774,7 +776,8 @@ impl Window {
         if approved_now {
             self.0.w.review.collapse(path);
             match self.0.w.files.next_unreviewed(Some(path)) {
-                Some(next) => self.select(Some(next), false),
+                Some(next) if advance => self.select(Some(next), false),
+                Some(_) => {}
                 None => self.toast("All files reviewed"),
             }
         }
