@@ -17,16 +17,6 @@
 .topbar splitbutton.toolbar-button > menubutton > button { min-height: 28px; font-weight: 500; }
 .topbar splitbutton.toolbar-button > button { padding: 0 10px; border-radius: 6px 0 0 6px; }
 .topbar splitbutton.toolbar-button > menubutton > button { padding: 0 6px; border-radius: 0 6px 6px 0; }
-.topbar .open-count {
-  min-width: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: alpha(@accent_bg_color, 0.2);
-  color: @accent_color;
-  font-size: 0.8em;
-  font-weight: 800;
-  font-feature-settings: "tnum";
-}
 
 .review-check { margin-right: 4px; }
 
@@ -171,7 +161,7 @@ button.composer-button {
   color: @accent_fg_color;
   border-radius: 5px;
   padding: 2px;
-  -gtk-icon-size: 12px;
+  -gtk-icon-size: 14px;
 }
 /* Around the lines being picked or commented on. */
 .line-frame {

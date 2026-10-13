@@ -52,8 +52,6 @@ struct Widgets {
     review_actions: gtk::Box,
     progress: gtk::Label,
     post_count: gtk::Label,
-    reviews_button: gtk::Button,
-    reviews_count: gtk::Label,
     reviews_dialog: ReviewsDialog,
     error_page: adw::StatusPage,
     clean_page: adw::StatusPage,
@@ -653,15 +651,6 @@ impl Window {
         let unsent: usize = project.review.files.keys().map(|p| project.review.unsent_notes(p)).sum();
         w.post_count.set_text(&unsent.to_string());
         w.post_count.set_visible(unsent > 0);
-
-        let open: usize = project.posted.iter().map(|e| e.open().count()).sum();
-        w.reviews_count.set_text(&open.to_string());
-        w.reviews_count.set_visible(open > 0);
-        w.reviews_button.set_tooltip_text(Some(&match open {
-            0 => "Posted Reviews (Ctrl+Shift+R)".to_owned(),
-            1 => "Posted Reviews: 1 comment not resolved yet (Ctrl+Shift+R)".to_owned(),
-            n => format!("Posted Reviews: {n} comments not resolved yet (Ctrl+Shift+R)"),
-        }));
     }
 
     fn render_content(&self) {
@@ -1075,23 +1064,9 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     post_button.add_css_class("suggested-action");
     post_button.add_css_class("toolbar-button");
 
-    let reviews_count = gtk::Label::new(None);
-    reviews_count.add_css_class("open-count");
-    reviews_count.set_valign(gtk::Align::Center);
-    let reviews_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    reviews_content.append(&gtk::Image::from_icon_name("view-list-bullet-symbolic"));
-    reviews_content.append(&reviews_count);
-    let reviews_button = gtk::Button::builder()
-        .child(&reviews_content)
-        .tooltip_text("Posted Reviews (Ctrl+Shift+R)")
-        .action_name("win.show-reviews")
-        .build();
-    reviews_button.add_css_class("toolbar-button");
-
     let review_actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     review_actions.append(&progress);
     review_actions.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-    review_actions.append(&reviews_button);
     review_actions.append(&post_button);
 
     let main_menu = gio::Menu::new();
@@ -1100,6 +1075,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     section.append(Some("Refresh"), Some("win.refresh"));
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
+    section.append(Some("Posted Reviews"), Some("win.show-reviews"));
     section.append(Some("Clear Review…"), Some("win.clear-review"));
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
@@ -1269,8 +1245,6 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         review_actions,
         progress,
         post_count,
-        reviews_button,
-        reviews_count,
         reviews_dialog: ReviewsDialog::new(),
         error_page,
         clean_page,

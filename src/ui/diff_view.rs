@@ -216,7 +216,7 @@ impl DiffView {
         let frame = gtk::Box::builder().css_classes(["line-frame"]).can_target(false).visible(false).build();
         overlay.add_overlay(&frame);
         let button = gtk::Image::builder()
-            .icon_name("list-add-symbolic")
+            .icon_name("chat-message-new-symbolic")
             .css_classes(["line-comment-button"])
             .cursor(&gtk::gdk::Cursor::from_name("pointer", None).expect("the pointer cursor"))
             .visible(false)

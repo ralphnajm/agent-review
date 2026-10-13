@@ -5,6 +5,18 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.7.0] - 2026-10-13
+
+### Added
+
+- A one-line installer: `curl -fsSL https://raw.githubusercontent.com/ralphnajm/agent-review/main/scripts/install.sh | sh`
+  installs or updates to the latest release on Ubuntu, Debian, Fedora and their derivatives.
+
+### Changed
+
+- **Posted Reviews** moved from its button in the top bar to the main menu (still Ctrl+Shift+R).
+- The button for commenting on lines shows a comment icon instead of a plus.
+
 ## [0.6.0] - 2026-10-13
 
 ### Added

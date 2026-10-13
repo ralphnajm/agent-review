@@ -12,7 +12,7 @@
 
 </div>
 
-![Agent Review showing a project's changes: reviewed files collapsed to their header, a comment inline under the line it is about, and the file list with review checkmarks](data/screenshots/review.png)
+![Agent Review showing a project's changes: reviewed files collapsed to their header, a signed comment inline under the line it is about, the comment button on a hovered line, and the file list with review checkmarks](data/screenshots/review.png)
 
 Coding agents write a lot of code, fast, and interrupting them after every file doesn't
 scale. Agent Review is a small native Linux desktop app for reviewing their work *while it
@@ -45,8 +45,8 @@ about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
 - **Diffs:** syntax highlighted, with old and new line numbers, find across files, and a
   filter for the file list.
 - **Comments:**
-  - Hover a line and click the **+** beside it to comment on that line, or drag it up or
-    down to comment on several lines. Shift-click extends the previous pick.
+  - Hover a line and click the comment button beside it to comment on that line, or drag it
+    up or down to comment on several lines. Shift-click extends the previous pick.
   - Or select lines in the code and press Ctrl+M.
   - Use the icon next to the file name to comment on the whole file.
   - Comments appear inline, under the lines they refer to.
@@ -59,9 +59,8 @@ about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
 - **Post Review:** queues all unsent comments for your agent, which pulls them through the
   [MCP server](#connecting-your-agent). Changed your mind? Undo takes the review back until
   the agent pulls it.
-- **Posted reviews:** the list button in the top bar counts the comments your agent hasn't
-  resolved yet and lists every review you posted, each comment marked *Waiting*, *Picked up*
-  or *Resolved*. It updates live as the agent works.
+- **Posted reviews:** in the main menu, lists every review you posted, each comment marked
+  *Waiting*, *Picked up* or *Resolved*. It updates live as the agent works.
 - **Copy Feedback:** from the arrow next to Post Review, puts all unsent comments on the
   clipboard as a Markdown prompt instead. The toast lets you mark them unsent again.
 - **Agent-agnostic:** reviews go through MCP, an open standard most coding agents support,
@@ -90,8 +89,16 @@ and Ubuntu 24.04+ have all of them.
 
 ### Packages
 
-Grab the `.deb` or `.rpm` from the
-[latest release](https://github.com/ralphnajm/agent-review/releases/latest) and install it:
+On Ubuntu, Debian, Fedora and their derivatives (x86_64), install or update to the latest release
+with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ralphnajm/agent-review/main/scripts/install.sh | sh
+```
+
+It downloads the `.deb` or `.rpm` for your distribution, installs it with `apt` or `dnf` (asking for
+your password through `sudo`), and deletes the download. Or grab the package from the
+[latest release](https://github.com/ralphnajm/agent-review/releases/latest) and install it yourself:
 
 ```sh
 sudo apt install ./agent-review_*.deb    # Ubuntu / Debian

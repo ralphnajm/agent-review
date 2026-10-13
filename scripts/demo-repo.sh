@@ -10,8 +10,8 @@ rm -rf "$dir"
 mkdir -p "$dir"
 cd "$dir"
 git init -q -b main
-git config user.name "Demo"
-git config user.email "demo@example.com"
+git config user.name "Alex Morgan"
+git config user.email "alex@example.com"
 
 mkdir -p app/routes tests
 
