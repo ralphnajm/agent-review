@@ -67,12 +67,24 @@ impl LineAnchor {
     }
 }
 
+/// Who wrote a comment: the repository's git identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Author {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<LineAnchor>,
     pub body: String,
+    /// Who wrote it; missing when git had no `user.name`, or for comments
+    /// written before authors were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<Author>,
     pub created_at: i64,
     /// When the note was last included in copied or sent feedback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,10 +145,18 @@ impl ReviewState {
         self.notes(path).iter().filter(|n| n.sent_at.is_none()).count()
     }
 
-    pub fn add_note(&mut self, path: &str, anchor: Option<LineAnchor>, body: &str, now: i64) -> u64 {
+    pub fn add_note(
+        &mut self,
+        path: &str,
+        anchor: Option<LineAnchor>,
+        body: &str,
+        author: Option<&Author>,
+        now: i64,
+    ) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
-        let note = Note { id, anchor, body: body.trim().to_owned(), created_at: now, sent_at: None };
+        let author = author.cloned();
+        let note = Note { id, anchor, body: body.trim().to_owned(), author, created_at: now, sent_at: None };
         self.files.entry(path.to_owned()).or_default().notes.push(note);
         id
     }
@@ -212,10 +232,12 @@ mod tests {
     fn notes_round_trip_and_track_sent_state() {
         let mut review = ReviewState::default();
         let anchor = LineAnchor { side: Side::New, line: 3, end_line: None, text: "+let x = 1;".into() };
-        let first = review.add_note("a.rs", Some(anchor), "  Rename x  ", 1);
-        let second = review.add_note("a.rs", None, "Needs tests", 2);
+        let ada = Author { name: "Ada".into(), email: Some("ada@example.com".into()) };
+        let first = review.add_note("a.rs", Some(anchor), "  Rename x  ", Some(&ada), 1);
+        let second = review.add_note("a.rs", None, "Needs tests", None, 2);
         assert_ne!(first, second);
         assert_eq!(review.notes("a.rs")[0].body, "Rename x");
+        assert_eq!(review.notes("a.rs")[0].author.as_ref(), Some(&ada));
         review.set_sent(&[first], Some(5));
         assert_eq!(review.unsent_notes("a.rs"), 1);
 

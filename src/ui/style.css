@@ -165,6 +165,20 @@ button.composer-button {
 /* The code font is set on the view; comment widgets inside it get the UI font back at startup. */
 .diff-view { font-family: monospace; }
 .diff-view gutter { background: @view_bg_color; }
+/* Floats at the start of the hovered line: press it, or drag it over more lines, to comment. */
+.line-comment-button {
+  background: @accent_bg_color;
+  color: @accent_fg_color;
+  border-radius: 5px;
+  padding: 2px;
+  -gtk-icon-size: 12px;
+}
+/* Around the lines being picked or commented on. */
+.line-frame {
+  border: 2px solid @accent_color;
+  border-radius: 6px;
+  background: alpha(@accent_bg_color, 0.06);
+}
 
 /* ----- Inline comments ----- */
 .comment-thread { margin: 6px 0 10px 0; }
@@ -183,7 +197,7 @@ button.composer-button {
 }
 button.history-button { min-height: 28px; padding: 0 6px; border-radius: 6px; font-size: 0.85em; font-feature-settings: "tnum"; }
 .comment-composer { box-shadow: 0 0 0 1px alpha(@accent_color, 0.6), 0 2px 8px alpha(black, 0.08); }
-.comment-target { font-weight: 700; font-size: 0.9em; }
+.comment-target, .comment-author { font-weight: 700; font-size: 0.9em; }
 .comment-meta { font-size: 0.85em; opacity: 0.55; }
 .comment-body { line-height: 1.4; }
 .comment-quote {

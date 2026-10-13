@@ -5,6 +5,28 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.6.0] - 2026-10-13
+
+### Added
+
+- Comments show who wrote them, both while you write one and on the comment itself: the
+  repository's git `user.name`, with `user.email` on hover, or "Unknown" when git has no name.
+
+### Changed
+
+- Long lines wrap to fit the window instead of scrolling the review sideways.
+- Hovering a line shows a **+** button at its start: click it to comment on the line, or drag it
+  up or down to comment on several lines. The lines are outlined in a blue box rather than
+  selected, so selecting code to copy it no longer gets mixed up with picking lines to comment
+  on.
+- The `+`/`−` markers next to the line numbers are gone: the line colours already tell added
+  from removed lines.
+
+### Fixed
+
+- Selecting lines to comment on no longer scrolls the diff away from them, pushing the comment
+  box out of view: the diff only scrolls when the comment box would open off screen.
+
 ## [0.5.0] - 2026-10-13
 
 ### Added

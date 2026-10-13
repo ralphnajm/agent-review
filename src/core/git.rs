@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 
 use crate::core::diff::{self, FileDiff};
+use crate::core::review::Author;
 use crate::core::status::{self, DiffMode, RepoStatus};
 
 /// The well-known id of git's empty tree, used as the base before the first commit.
@@ -87,6 +88,16 @@ impl Repo {
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
         cmd
+    }
+
+    /// Who the repository's commits are authored by (`user.name` and `user.email`), if set.
+    pub fn author(&self) -> Option<Author> {
+        let config = |key: &str| {
+            let output = self.command().args(["config", key]).output().ok()?;
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            (output.status.success() && !value.is_empty()).then_some(value)
+        };
+        Some(Author { name: config("user.name")?, email: config("user.email") })
     }
 
     fn pathspec(&self) -> [&std::ffi::OsStr; 2] {
@@ -276,6 +287,17 @@ mod tests {
         let snapshot = Repo::discover(dir.path()).unwrap().snapshot(DiffMode::All).unwrap();
         assert!(!snapshot.status.has_head);
         assert_eq!(snapshot.all["a.txt"].additions, 1);
+    }
+
+    #[test]
+    fn reads_the_author_from_git_config() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["config", "user.name", "Ada Lovelace"]);
+        git(dir.path(), &["config", "user.email", "ada@example.com"]);
+        let author = Repo::discover(dir.path()).unwrap().author().unwrap();
+        assert_eq!(author.name, "Ada Lovelace");
+        assert_eq!(author.email.as_deref(), Some("ada@example.com"));
     }
 
     #[test]

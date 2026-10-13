@@ -18,7 +18,7 @@ use crate::core::diff::FileDiff;
 use crate::core::feedback::{self, Feedback, FileInfo, Options};
 use crate::core::git::{Repo, Snapshot};
 use crate::core::queue::{self, Queue};
-use crate::core::review::{ApprovalState, LineAnchor, ReviewState};
+use crate::core::review::{ApprovalState, Author, LineAnchor, ReviewState};
 use crate::core::status::{DiffMode, StatusEntry};
 use crate::core::store::{self, Settings};
 use crate::core::{self as app_core, watcher};
@@ -61,6 +61,8 @@ struct Widgets {
 
 struct Project {
     repo: Repo,
+    /// Who the comments are written by, from git; unknown if it isn't set.
+    author: Option<Author>,
     snapshot: Snapshot,
     /// `HEAD` → worktree fingerprints by path, for approvals.
     fingerprints: HashMap<String, String>,
@@ -407,6 +409,7 @@ impl Window {
         let watch = self.start_watching(&repo);
         let queue = Queue::for_repo(&repo.root);
         let queue_watch = self.start_watching_queue(&queue);
+        let author = repo.author();
         {
             let mut state = self.0.state.borrow_mut();
             state.generation += 1;
@@ -414,6 +417,7 @@ impl Window {
             state.selected = None;
             state.settings.touch_project(&path, app_core::now());
             state.project = Some(Project {
+                author: author.clone(),
                 review: store::load_review(&path),
                 posted: queue.load(),
                 queue,
@@ -428,6 +432,7 @@ impl Window {
         self.save_settings();
         self.0.w.search.set_text("");
         self.0.w.review.clear();
+        self.0.w.review.set_author(author.as_ref());
         self.render();
         self.refresh();
     }
@@ -781,7 +786,7 @@ impl Window {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = state.project.as_mut() else { return };
             let now = app_core::now();
-            project.review.add_note(path, anchor, body, now);
+            project.review.add_note(path, anchor, body, project.author.as_ref(), now);
             // Commenting on a file counts as reviewing it.
             if project.approval(path) != ApprovalState::Approved {
                 let fingerprint = project.fingerprint(path).to_owned();

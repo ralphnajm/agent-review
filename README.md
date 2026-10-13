@@ -45,8 +45,8 @@ about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
 - **Diffs:** syntax highlighted, with old and new line numbers, find across files, and a
   filter for the file list.
 - **Comments:**
-  - Click a line number to comment on that line, or drag down the line numbers to comment
-    on several lines. Shift-click extends the previous selection.
+  - Hover a line and click the **+** beside it to comment on that line, or drag it up or
+    down to comment on several lines. Shift-click extends the previous pick.
   - Or select lines in the code and press Ctrl+M.
   - Use the icon next to the file name to comment on the whole file.
   - Comments appear inline, under the lines they refer to.

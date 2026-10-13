@@ -27,7 +27,7 @@ use sourceview5::prelude::*;
 
 use crate::core::align::{self, Run};
 use crate::core::diff::{FileDiff, Gap, LineKind};
-use crate::core::review::{LineAnchor, Note, Side};
+use crate::core::review::{Author, LineAnchor, Note, Side};
 use crate::ui::scroller::Scroller;
 use crate::ui::util;
 
@@ -103,6 +103,8 @@ type LoadCallback = Box<dyn Fn(Box<dyn FnOnce(Option<String>)>)>;
 
 struct Composer {
     root: gtk::Box,
+    /// Who the comment is by.
+    author: gtk::Label,
     title: gtk::Label,
     text: gtk::TextView,
     cancel: gtk::Button,
@@ -131,6 +133,14 @@ struct Inner {
     view: sourceview5::View,
     buffer: sourceview5::Buffer,
     gutter: sourceview5::GutterRendererText,
+    /// The button floating at the start of the hovered line, to comment on it.
+    button: gtk::Image,
+    /// The box around the lines being picked or commented on.
+    frame: gtk::Box,
+    /// The buffer line the button is on.
+    hovered: Cell<Option<i32>>,
+    /// The buffer lines the composer comments on, first and last.
+    target_lines: Cell<Option<(usize, usize)>>,
     composer: Composer,
     rows: RefCell<Vec<Row>>,
     /// Width of each line-number column, in characters.
@@ -147,9 +157,9 @@ struct Inner {
     gap: Cell<Option<usize>>,
     /// Height reserved for the composer, in pixels.
     gap_height: Cell<i32>,
-    /// Line where a gutter selection started, for shift-click.
+    /// Line where picking lines from the gutter started, for shift-click.
     selection_origin: Cell<Option<i32>>,
-    /// Pointer height in the scroller while selecting lines from the gutter.
+    /// Pointer height in the scroller while picking lines from the gutter.
     drag_y: Cell<Option<f64>>,
     /// Scrolls the view while that pointer is past its top or bottom edge.
     autoscroll: RefCell<Option<gtk::TickCallbackId>>,
@@ -174,7 +184,10 @@ impl DiffView {
         let view = sourceview5::View::with_buffer(&buffer);
         view.set_editable(false);
         view.set_cursor_visible(false);
-        view.set_left_margin(12);
+        // Long lines wrap rather than scroll sideways.
+        view.set_wrap_mode(gtk::WrapMode::WordChar);
+        // Room for the comment button between the line numbers and the code.
+        view.set_left_margin(20);
         view.set_top_margin(8);
         view.set_bottom_margin(12);
         view.add_css_class("diff-view");
@@ -193,9 +206,22 @@ impl DiffView {
         let gutter = sourceview5::GutterRendererText::new();
         gutter.set_xpad(8);
         gutter.set_xalign(0.0);
-        // Centred on rows taller than a line, such as those of hidden lines.
+        // On the first row of a wrapped line.
+        gutter.set_alignment_mode(sourceview5::GutterRendererAlignmentMode::First);
         gutter.set_yalign(0.5);
-        ViewExt::gutter(&view, gtk::TextWindowType::Left).insert(&gutter, 0);
+        let left = ViewExt::gutter(&view, gtk::TextWindowType::Left);
+        left.insert(&gutter, 0);
+        left.set_cursor_from_name(Some("pointer"));
+        // Drawn over the text, so they take no room from it.
+        let frame = gtk::Box::builder().css_classes(["line-frame"]).can_target(false).visible(false).build();
+        overlay.add_overlay(&frame);
+        let button = gtk::Image::builder()
+            .icon_name("list-add-symbolic")
+            .css_classes(["line-comment-button"])
+            .cursor(&gtk::gdk::Cursor::from_name("pointer", None).expect("the pointer cursor"))
+            .visible(false)
+            .build();
+        overlay.add_overlay(&button);
 
         let this = Self(Rc::new(Inner {
             root,
@@ -206,6 +232,10 @@ impl DiffView {
             view,
             buffer,
             gutter,
+            button,
+            frame,
+            hovered: Cell::new(None),
+            target_lines: Cell::new(None),
             composer,
             rows: RefCell::default(),
             number_width: Cell::new(3),
@@ -268,6 +298,11 @@ impl DiffView {
         self.0.on_focus.replace(Some(Box::new(callback)));
     }
 
+    /// Signs new comments with `author`, or as unknown, shown above what is being written.
+    pub fn set_author(&self, author: Option<&Author>) {
+        show_author(&self.0.composer.author, author);
+    }
+
     pub fn search(&self) -> &sourceview5::SearchContext {
         &self.0.search
     }
@@ -297,8 +332,6 @@ impl DiffView {
         info.set_style(gtk::pango::Style::Italic);
         info.set_pixels_above_lines(12);
         info.set_foreground_rgba(Some(&grey));
-        // Created last so it paints over the diff colours: the lines being commented on.
-        tag("target", (0.21, 0.52, 0.89, 0.2));
         // The match the find bar is on: the selection is faint while the bar has focus.
         table.add(
             &gtk::TextTag::builder().name("found").background_rgba(&gtk::gdk::RGBA::new(0.96, 0.6, 0.0, 0.6)).build(),
@@ -331,40 +364,28 @@ impl DiffView {
             }
         });
 
-        // Pressing on the line numbers selects whole lines and dragging extends the
-        // selection; releasing comments on it. Shift-click extends the last selection.
-        let gutter = ViewExt::gutter(&self.0.view, gtk::TextWindowType::Left);
-        let drag = gtk::GestureDrag::new();
+        // Hovering a code line shows a comment button in the gutter.
+        let motion = gtk::EventControllerMotion::new();
         let weak = self.weak();
-        drag.connect_drag_begin(move |gesture, x, y| {
-            let Some(inner) = weak.upgrade() else { return };
-            // Keep the text view from starting a selection of its own.
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            let this = DiffView(inner);
-            let extend = gesture.current_event_state().contains(gtk::gdk::ModifierType::SHIFT_MASK);
-            if let Some(y) = this.gutter_to_scroller_y(x, y) {
-                this.begin_line_drag(y, extend);
-            }
-        });
-        let weak = self.weak();
-        drag.connect_drag_update(move |gesture, dx, dy| {
-            if let Some(inner) = weak.upgrade()
-                && let Some((x, y)) = gesture.start_point()
-            {
-                let this = DiffView(inner);
-                if let Some(y) = this.gutter_to_scroller_y(x + dx, y + dy) {
-                    this.0.drag_y.set(Some(y));
-                    this.extend_line_drag();
-                }
-            }
-        });
-        let weak = self.weak();
-        drag.connect_drag_end(move |_, _, _| {
+        motion.connect_motion(move |_, x, y| {
             if let Some(inner) = weak.upgrade() {
-                DiffView(inner).end_line_drag();
+                let this = DiffView(inner);
+                #[allow(clippy::cast_possible_truncation)]
+                let point = gtk::graphene::Point::new(x as f32, y as f32);
+                let y = this.0.overlay.compute_point(&this.0.view, &point).map(|p| f64::from(p.y()));
+                this.hover(y);
             }
         });
-        gutter.add_controller(drag);
+        let weak = self.weak();
+        motion.connect_leave(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                DiffView(inner).hover(None);
+            }
+        });
+        // On the overlay, so that moving onto the button keeps it.
+        self.0.overlay.add_controller(motion);
+
+        self.connect_line_drag();
 
         // Clicking a row of hidden lines shows them. Captured, so that the
         // click selects nothing and opens no comment.
@@ -414,12 +435,85 @@ impl DiffView {
         let weak = self.weak();
         self.0.overlay.connect_get_child_position(move |_, widget| {
             let inner = weak.upgrade()?;
-            if widget == inner.composer.root.upcast_ref::<gtk::Widget>() {
-                DiffView(inner).composer_rect()
+            let this = DiffView(inner);
+            if widget == this.0.composer.root.upcast_ref::<gtk::Widget>() {
+                this.composer_rect()
+            } else if widget == this.0.frame.upcast_ref::<gtk::Widget>() {
+                this.frame_rect()
+            } else if widget == this.0.button.upcast_ref::<gtk::Widget>() {
+                this.button_rect()
             } else {
                 None
             }
         });
+    }
+
+    /// Pressing the button or a code line's numbers picks the line, and dragging picks
+    /// more or fewer; releasing comments on them. Shift-click extends the last pick.
+    /// Selecting text is left to the text view, for copying. Captured on the overlay,
+    /// which holds both the view and the button.
+    fn connect_line_drag(&self) {
+        let drag = gtk::GestureDrag::new();
+        drag.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = self.weak();
+        drag.connect_drag_begin(move |gesture, x, y| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = DiffView(inner);
+            if !this.picks_at(x, y) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            // Keep the text view from starting a selection of its own.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let extend = gesture.current_event_state().contains(gtk::gdk::ModifierType::SHIFT_MASK);
+            if let Some(y) = this.to_scroller_y(x, y) {
+                this.begin_line_drag(y, extend);
+            }
+        });
+        let weak = self.weak();
+        drag.connect_drag_update(move |gesture, dx, dy| {
+            if let Some(inner) = weak.upgrade()
+                && let Some((x, y)) = gesture.start_point()
+            {
+                let this = DiffView(inner);
+                if this.0.drag_y.get().is_some()
+                    && let Some(y) = this.to_scroller_y(x + dx, y + dy)
+                {
+                    this.0.drag_y.set(Some(y));
+                    this.extend_line_drag();
+                }
+            }
+        });
+        let weak = self.weak();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(inner) = weak.upgrade() {
+                let this = DiffView(inner);
+                if this.0.drag_y.get().is_some() {
+                    this.end_line_drag();
+                }
+            }
+        });
+        self.0.overlay.add_controller(drag);
+    }
+
+    /// Whether pressing at `x`, `y` of the overlay picks lines: on the button, or
+    /// on the numbers of a code line.
+    fn picks_at(&self, x: f64, y: f64) -> bool {
+        #[allow(clippy::cast_possible_truncation)]
+        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        let within = |widget: &gtk::Widget| {
+            widget.is_visible() && widget.compute_bounds(&self.0.overlay).is_some_and(|b| b.contains_point(&point))
+        };
+        if within(self.0.button.upcast_ref()) {
+            return true;
+        }
+        let gutter = ViewExt::gutter(&self.0.view, gtk::TextWindowType::Left);
+        let Some(y) = self.0.overlay.compute_point(&self.0.view, &point).map(|p| f64::from(p.y())) else {
+            return false;
+        };
+        let line = usize::try_from(self.line_at_view_y(y)).ok();
+        let code = line.and_then(|l| self.0.rows.borrow().get(l).map(|r| matches!(r.kind, RowKind::Line(_))));
+        within(gutter.upcast_ref()) && code == Some(true)
     }
 
     fn connect_composer(&self) {
@@ -611,13 +705,12 @@ impl DiffView {
         self.0.rows.borrow().iter().position(|r| r.index == Some(index))
     }
 
-    /// Converts a point in the gutter to a height in the scroller, which
+    /// Converts a point in the overlay to a height in the scroller, which
     /// stays put while the view scrolls under the pointer.
-    fn gutter_to_scroller_y(&self, x: f64, y: f64) -> Option<f64> {
-        let gutter = ViewExt::gutter(&self.0.view, gtk::TextWindowType::Left);
+    fn to_scroller_y(&self, x: f64, y: f64) -> Option<f64> {
         #[allow(clippy::cast_possible_truncation)]
         let point = gtk::graphene::Point::new(x as f32, y as f32);
-        gutter.compute_point(self.0.scroller.window(), &point).map(|p| f64::from(p.y()))
+        self.0.overlay.compute_point(self.0.scroller.window(), &point).map(|p| f64::from(p.y()))
     }
 
     /// The buffer line shown at height `y` of the view, clamped to the view.
@@ -638,14 +731,73 @@ impl DiffView {
         self.line_at_view_y(point.map_or(0.0, |p| f64::from(p.y())))
     }
 
-    /// Starts selecting lines from the line number at height `y` of the scroller.
+    /// Shows the comment button on the code line at height `y` of the view, or hides it.
+    fn hover(&self, y: Option<f64>) {
+        // While picking lines, it stays on the first one.
+        if self.0.drag_y.get().is_some() {
+            return;
+        }
+        let line = y.map(|y| self.line_at_view_y(y)).filter(|&line| {
+            let rows = self.0.rows.borrow();
+            usize::try_from(line).ok().and_then(|l| rows.get(l)).is_some_and(|r| matches!(r.kind, RowKind::Line(_)))
+        });
+        self.set_hovered(line);
+    }
+
+    fn set_hovered(&self, line: Option<i32>) {
+        if self.0.hovered.replace(line) != line {
+            self.0.button.set_visible(line.is_some());
+            self.0.overlay.queue_allocate();
+        }
+    }
+
+    /// The buffer lines in the box: those being picked, or else those commented on.
+    fn framed_lines(&self) -> Option<(usize, usize)> {
+        match self.dragged_lines() {
+            Some((first, last)) => Some((usize::try_from(first).ok()?, usize::try_from(last).ok()?)),
+            None => self.0.target_lines.get(),
+        }
+    }
+
+    /// Shows or hides the box once the lines in it change.
+    fn update_frame(&self) {
+        self.0.frame.set_visible(self.framed_lines().is_some());
+        self.0.overlay.queue_allocate();
+    }
+
+    /// Where the box goes: around its lines, across the view.
+    fn frame_rect(&self) -> Option<gtk::gdk::Rectangle> {
+        let (first, last) = self.framed_lines()?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let (top, bottom) = self.line_span(first as i32, last as i32)?;
+        #[allow(clippy::cast_possible_truncation)]
+        let point = gtk::graphene::Point::new(0.0, top as f32);
+        let origin = self.0.view.compute_point(&self.0.overlay, &point)?;
+        #[allow(clippy::cast_possible_truncation)]
+        let (y, height) = (origin.y().round() as i32, (bottom - top).round() as i32);
+        Some(gtk::gdk::Rectangle::new(2, y - 1, self.0.view.width() - 4, height + 2))
+    }
+
+    /// Where the button goes: between the line numbers and the code, centred
+    /// on the first row of its line.
+    fn button_rect(&self) -> Option<gtk::gdk::Rectangle> {
+        let line = self.0.hovered.get()?;
+        let row = self.0.view.iter_location(&self.0.buffer.iter_at_line(line)?);
+        let (x, y) = self.to_overlay(0, row.y())?;
+        let (_, width, _, _) = self.0.button.measure(gtk::Orientation::Horizontal, -1);
+        let (_, height, _, _) = self.0.button.measure(gtk::Orientation::Vertical, width);
+        let x = x + (self.0.view.left_margin() - width) / 2;
+        Some(gtk::gdk::Rectangle::new(x, y + (row.height() - height) / 2, width, height))
+    }
+
+    /// Starts picking lines from the one at height `y` of the scroller.
     fn begin_line_drag(&self, y: f64, extend: bool) {
         let line = self.line_at_scroller_y(y);
         if !extend || self.0.selection_origin.get().is_none() {
             self.0.selection_origin.set(Some(line));
         }
+        self.set_hovered(self.0.selection_origin.get());
         self.0.drag_y.set(Some(y));
-        self.0.view.grab_focus();
         self.extend_line_drag();
         let weak = self.weak();
         let tick = self.0.view.add_tick_callback(move |_, _| {
@@ -666,9 +818,7 @@ impl DiffView {
     }
 
     fn extend_line_drag(&self) {
-        if let Some((first, last)) = self.dragged_lines() {
-            self.select_lines(first, last);
-        }
+        self.update_frame();
     }
 
     /// Scrolls towards the pointer while it is dragged past the top or bottom edge.
@@ -682,10 +832,11 @@ impl DiffView {
         }
     }
 
-    /// Comments on the selected lines once the button is released.
+    /// Comments on the picked lines once the button is released.
     fn end_line_drag(&self) {
         let lines = self.dragged_lines().and_then(|(first, last)| self.covering(first, last));
         self.0.drag_y.set(None);
+        self.update_frame();
         if let Some(tick) = self.0.autoscroll.take() {
             tick.remove();
         }
@@ -702,18 +853,9 @@ impl DiffView {
         let number = |n: Option<u32>| n.map_or_else(String::new, |n| n.to_string());
         match row.kind {
             RowKind::Widget | RowKind::Info | RowKind::Spacer | RowKind::Hidden => String::new(),
-            RowKind::Line(kind) => {
-                let sign = match kind {
-                    LineKind::Added => "<span foreground=\"#2ec27e\" weight=\"bold\">+</span>",
-                    LineKind::Removed => "<span foreground=\"#ed333b\" weight=\"bold\">−</span>",
-                    LineKind::Context => " ",
-                };
-                format!(
-                    "<span alpha=\"50%\">{:>w$} {:>w$}</span> {sign}",
-                    number(row.old_no),
-                    number(row.new_no),
-                    w = width
-                )
+            // The line's colour tells added from removed.
+            RowKind::Line(_) => {
+                format!("<span alpha=\"50%\">{:>w$} {:>w$}</span>", number(row.old_no), number(row.new_no), w = width)
             }
         }
     }
@@ -750,6 +892,8 @@ impl DiffView {
     }
 
     fn render(&self, change: Change) {
+        // The lines move: hidden until the pointer does.
+        self.set_hovered(None);
         let diff_ref = self.0.diff.borrow();
         let Some(diff) = diff_ref.as_ref() else { return };
         let notes = self.0.notes.borrow();
@@ -845,18 +989,11 @@ impl DiffView {
         let max_line = rows.iter().filter_map(|r| r.old_no.max(r.new_no)).max().unwrap_or(0);
         let width = max_line.to_string().len().max(3);
         self.0.number_width.set(width);
-        let sample = format!("{} {} −", "0".repeat(width), "0".repeat(width));
+        let sample = format!("{} {}", "0".repeat(width), "0".repeat(width));
         // Measured with the gutter's own (monospace) font.
         let (sample_width, _) = self.0.gutter.create_pango_layout(Some(&sample)).pixel_size();
         let gutter_width = sample_width + 2 * self.0.gutter.xpad() + 4;
         self.0.gutter.set_width_request(gutter_width);
-        // A text view asks for no width for its text, expecting to scroll it
-        // itself: ask for the longest line's, so the panel scrolls sideways
-        // instead of cutting it off.
-        let longest = text.lines().max_by_key(|l| l.chars().count()).unwrap_or_default();
-        let (text_width, _) = self.0.view.create_pango_layout(Some(&longest.replace('\t', "        "))).pixel_size();
-        let view = &self.0.view;
-        view.set_width_request(gutter_width + view.left_margin() + text_width + view.right_margin() + 24);
 
         let buffer = &self.0.buffer;
         let language = sourceview5::LanguageManager::default().guess_language(Some(diff.path()), None);
@@ -879,8 +1016,6 @@ impl DiffView {
             self.apply_line_tags(0..lines);
             buffer.place_cursor(&buffer.start_iter());
         }
-        let (start, end) = buffer.bounds();
-        buffer.remove_tag_by_name("target", &start, &end);
         self.apply_target(target.as_ref());
         for (line, child) in self.widget_lines().into_iter().zip(&children) {
             // Threads on lines that were kept still have their anchor.
@@ -1066,9 +1201,8 @@ impl DiffView {
                 .collect();
             (lines, rows.iter().position(|r| r.kind == RowKind::Spacer))
         };
-        if let (Some(&from), Some(&to)) = (lines.first(), lines.last()) {
-            self.tag_lines("target", from, to + 1);
-        }
+        self.0.target_lines.set(lines.first().zip(lines.last()).map(|(&first, &last)| (first, last)));
+        self.update_frame();
         if let Some(line) = spacer {
             self.tag_lines("gap", line, line + 1);
         }
@@ -1081,16 +1215,6 @@ impl DiffView {
         let from = iter_at_line(buffer, start);
         let to = if end < self.0.rows.borrow().len() { iter_at_line(buffer, end) } else { buffer.end_iter() };
         buffer.apply_tag_by_name(tag, &from, &to);
-    }
-
-    fn select_lines(&self, first: i32, last: i32) {
-        let buffer = &self.0.buffer;
-        let start = buffer.iter_at_line(first).unwrap_or_else(|| buffer.end_iter());
-        let mut end = buffer.iter_at_line(last).unwrap_or_else(|| buffer.end_iter());
-        if !end.ends_line() {
-            end.forward_to_line_end();
-        }
-        buffer.select_range(&start, &end);
     }
 
     /// The code lines covered by the selection, with their index range.
@@ -1130,11 +1254,7 @@ impl DiffView {
             Some((anchor, range)) => Target { anchor: Some(anchor), range: Some(range) },
             None => Target { anchor: None, range: None },
         };
-        let title = target
-            .anchor
-            .as_ref()
-            .map_or_else(|| "Comment on this file".to_owned(), |a| format!("Comment on {}", a.label().to_lowercase()));
-        self.0.composer.title.set_text(&title);
+        self.0.composer.title.set_text(&format!("on {}", target_label(target.anchor.as_ref())));
         self.0.composer.root.set_visible(true);
         self.set_target(Some(target));
         // The target highlight replaces the selection, and the composer is
@@ -1171,8 +1291,6 @@ impl DiffView {
     /// would rebuild the buffer for what is a one-line change.
     fn set_target(&self, target: Option<Target>) {
         let buffer = &self.0.buffer;
-        let (start, end) = buffer.bounds();
-        buffer.remove_tag_by_name("target", &start, &end);
         if let Some(line) = self.0.gap.take() {
             buffer.delete(&mut iter_at_line(buffer, line), &mut iter_at_line(buffer, line + 1));
             self.0.rows.borrow_mut().remove(line);
@@ -1236,18 +1354,17 @@ impl DiffView {
         card.add_css_class("comment-card");
         let outdated = note.anchor.as_ref().filter(|a| !a.is_current(Some(diff)));
 
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let target = match (&note.anchor, outdated) {
-            (Some(anchor), None) => anchor.label(),
-            (Some(anchor), Some(_)) => format!("{} · outdated", anchor.label()),
-            (None, _) => "File".to_owned(),
-        };
-        header.append(&util::label(&target, &["comment-target"]));
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let time = match note.sent_at {
             Some(sent) => format!("sent {}", util::relative_time(sent, now)),
             None => util::relative_time(note.created_at, now),
         };
-        header.append(&util::label(&time, &["comment-meta"]));
+        let tag = if outdated.is_some() { " · outdated" } else { "" };
+        let author = util::label("", &["comment-author"]);
+        show_author(&author, note.author.as_ref());
+        header.append(&author);
+        let target = format!("on {}{tag} · {time}", target_label(note.anchor.as_ref()));
+        header.append(&util::label(&target, &["comment-meta"]));
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         header.append(&spacer);
@@ -1290,7 +1407,9 @@ impl DiffView {
 }
 
 fn build_composer() -> Composer {
-    let title = util::label("Comment", &["comment-target"]);
+    let author = util::label("", &["comment-author"]);
+    show_author(&author, None);
+    let title = util::label("", &["comment-meta"]);
     let text = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
         .accepts_tab(false)
@@ -1334,10 +1453,24 @@ fn build_composer() -> Composer {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     root.add_css_class("comment-composer");
-    root.append(&title);
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    header.append(&author);
+    header.append(&title);
+    root.append(&header);
     root.append(&overlay);
     root.append(&actions);
-    Composer { root, title, text, cancel, submit }
+    Composer { root, author, title, text, cancel, submit }
+}
+
+/// Shows the author's name, with their email on hover, or "Unknown" when git has no name.
+fn show_author(label: &gtk::Label, author: Option<&Author>) {
+    label.set_text(author.map_or("Unknown", |a| a.name.as_str()));
+    label.set_tooltip_text(author.and_then(|a| a.email.as_deref()));
+}
+
+/// What a comment is on, to follow "on": "lines 4–6", or "this file".
+fn target_label(anchor: Option<&LineAnchor>) -> String {
+    anchor.map_or_else(|| "this file".to_owned(), |a| a.label().to_lowercase())
 }
 
 /// Adds the unchanged lines of `gap` from `shown`, the new side of the file,

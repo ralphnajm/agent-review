@@ -167,12 +167,12 @@ mod tests {
         let diff = sample_diff();
         let mut review = ReviewState::default();
         let anchor = LineAnchor { side: Side::New, line: 2, end_line: None, text: "+    let x = 1;".into() };
-        review.add_note("src/main.rs", Some(anchor), "Use a descriptive name.\nAlso add a test.", 1);
+        review.add_note("src/main.rs", Some(anchor), "Use a descriptive name.\nAlso add a test.", None, 1);
         let range = LineAnchor::covering(&diff, 0, 2).unwrap();
-        review.add_note("src/main.rs", Some(range), "Simplify.", 2);
-        review.add_note("src/main.rs", None, "Split this file.", 2);
-        review.add_note("gone.rs", None, "Restore this.", 3);
-        review.add_note("src/extra.rs", None, "Rename.", 4);
+        review.add_note("src/main.rs", Some(range), "Simplify.", None, 2);
+        review.add_note("src/main.rs", None, "Split this file.", None, 2);
+        review.add_note("gone.rs", None, "Restore this.", None, 3);
+        review.add_note("src/extra.rs", None, "Rename.", None, 4);
         let files = [
             FileInfo { path: "src/main.rs", diff: Some(&diff), approval: ApprovalState::Unreviewed },
             FileInfo { path: "src/lib.rs", diff: None, approval: ApprovalState::Approved },
@@ -225,7 +225,7 @@ These files look good, no changes needed:
     #[test]
     fn skips_sent_notes_unless_requested() {
         let mut review = ReviewState::default();
-        let id = review.add_note("a.rs", None, "Fix", 1);
+        let id = review.add_note("a.rs", None, "Fix", None, 1);
         review.set_sent(&[id], Some(2));
         let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
         assert!(build(&review, &files, &Options::default()).is_empty());
@@ -238,7 +238,7 @@ These files look good, no changes needed:
         let diff = sample_diff();
         let mut review = ReviewState::default();
         let anchor = LineAnchor { side: Side::New, line: 2, end_line: None, text: "+let y = 2;".into() };
-        review.add_note("src/main.rs", Some(anchor), "Hmm", 1);
+        review.add_note("src/main.rs", Some(anchor), "Hmm", None, 1);
         let files = [FileInfo { path: "src/main.rs", diff: Some(&diff), approval: ApprovalState::Unreviewed }];
         let text = build(&review, &files, &Options::default()).text;
         assert!(text.contains("**Line 2** (changed since): `let y = 2;`"));

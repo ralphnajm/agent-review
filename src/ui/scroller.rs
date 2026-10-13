@@ -19,9 +19,16 @@ struct Inner {
 impl Scroller {
     pub fn new() -> Self {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        // As wide as the longest line, so long lines scroll sideways rather than being cut off.
-        let viewport = gtk::Viewport::builder().child(&content).hscroll_policy(gtk::ScrollablePolicy::Natural).build();
-        let window = gtk::ScrolledWindow::builder().child(&viewport).vexpand(true).hexpand(true).build();
+        // Not scrolled to the focus: a diff taking it would jump to its top or bottom, and the
+        // composer takes it before it is laid out where it opens. `reveal` scrolls instead.
+        let viewport = gtk::Viewport::builder().child(&content).scroll_to_focus(false).build();
+        // Never sideways: long lines wrap.
+        let window = gtk::ScrolledWindow::builder()
+            .child(&viewport)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
         Self(Rc::new(Inner { window, content, inset: Cell::new(0.0) }))
     }
 

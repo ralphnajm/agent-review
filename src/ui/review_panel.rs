@@ -16,7 +16,7 @@ use gtk::subclass::prelude::*;
 use sourceview5::prelude::*;
 
 use crate::core::diff::FileDiff;
-use crate::core::review::{ApprovalState, LineAnchor, Note};
+use crate::core::review::{ApprovalState, Author, LineAnchor, Note};
 use crate::core::status::ChangeKind;
 use crate::ui::diff_view::{DiffView, Find};
 use crate::ui::scroller::Scroller;
@@ -89,6 +89,8 @@ struct Inner {
     settle: RefCell<Option<gtk::TickCallbackId>>,
     /// Set while scrolling programmatically.
     scrolling: Cell<bool>,
+    /// Who comments are written by, shown in the composer.
+    author: RefCell<Option<Author>>,
     on_add: RefCell<Option<AddCallback>>,
     on_delete: RefCell<Option<DeleteCallback>>,
     on_reviewed: RefCell<Option<PathCallback>>,
@@ -115,6 +117,7 @@ impl ReviewPanel {
             target: RefCell::default(),
             settle: RefCell::default(),
             scrolling: Cell::new(false),
+            author: RefCell::default(),
             on_add: RefCell::default(),
             on_delete: RefCell::default(),
             on_reviewed: RefCell::default(),
@@ -192,12 +195,21 @@ impl ReviewPanel {
         self.apply_filter();
     }
 
+    /// Signs new comments with `author`, or as unknown.
+    pub fn set_author(&self, author: Option<&Author>) {
+        self.0.author.replace(author.cloned());
+        for section in self.0.sections.borrow().iter() {
+            if let Some(view) = section.view.borrow().as_ref() {
+                view.set_author(author);
+            }
+        }
+    }
+
     /// Removes every file, for another project or view.
     pub fn clear(&self) {
         self.set_files(Vec::new());
         self.0.current.replace(None);
         self.0.scroller.window().vadjustment().set_value(0.0);
-        self.0.scroller.window().hadjustment().set_value(0.0);
     }
 
     /// Shows only the files whose path contains `text`, ignoring case.
@@ -398,6 +410,7 @@ impl ReviewPanel {
             return;
         }
         let view = DiffView::new(&self.0.scroller, &self.0.search.settings);
+        view.set_author(self.0.author.borrow().as_ref());
         let path = section.path.clone();
         let weak = self.weak();
         view.connect_add(move |anchor, body| {
@@ -467,19 +480,11 @@ impl ReviewPanel {
                 ReviewPanel(inner).update_stuck();
             }
         });
-        // Headers stay put when scrolling sideways, and comment cards follow the width.
-        let hadjustment = window.hadjustment();
+        // Comment cards follow the width.
         let weak = self.weak();
-        hadjustment.connect_value_changed(move |_| {
-            if let Some(inner) = weak.upgrade() {
-                ReviewPanel(inner).reallocate_all();
-            }
-        });
-        let weak = self.weak();
-        hadjustment.connect_changed(move |_| {
+        window.hadjustment().connect_changed(move |_| {
             if let Some(inner) = weak.upgrade() {
                 let this = ReviewPanel(inner);
-                this.reallocate_all();
                 for section in this.0.sections.borrow().iter() {
                     if let Some(view) = section.view.borrow().as_ref() {
                         view.relayout();
@@ -573,12 +578,6 @@ impl ReviewPanel {
             if section.widget.header_offset() != 0 || stuck.as_ref().is_some_and(|s| Rc::ptr_eq(s, section)) {
                 section.widget.queue_allocate();
             }
-        }
-    }
-
-    fn reallocate_all(&self) {
-        for section in self.0.sections.borrow().iter() {
-            section.widget.queue_allocate();
         }
     }
 
@@ -846,7 +845,7 @@ fn build_search() -> Search {
 
 glib::wrapper! {
     /// A file's header above its diff. While the diff scrolls past the top
-    /// of the panel, the header stays there, and it never scrolls sideways.
+    /// of the panel, the header stays there.
     pub struct SectionBox(ObjectSubclass<imp::SectionBox>)
         @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
@@ -947,21 +946,18 @@ mod imp {
                 .as_ref()
                 .and_then(|s| s.window().compute_point(&*self.obj(), &graphene::Point::zero()))
                 .unwrap_or_else(graphene::Point::zero);
-            let page_width = scroller.as_ref().map_or(width, |s| s.window().width()).clamp(1, width.max(1));
 
             let mut header_height = 0;
             if let Some(header) = self.header.borrow().as_ref().filter(|h| h.should_layout()) {
-                header_height = header.measure(gtk::Orientation::Vertical, page_width).0;
-                #[allow(clippy::cast_possible_truncation)]
-                let x = (origin.x().round() as i32).clamp(0, (width - page_width).max(0));
+                header_height = header.measure(gtk::Orientation::Vertical, width).0;
                 // Stuck while the section passes the top, pushed up by the next one; a
                 // section entirely above the top keeps it in place, off screen.
                 #[allow(clippy::cast_possible_truncation)]
                 let top = origin.y().round() as i32;
                 let y = if top >= height { 0 } else { top.clamp(0, (height - header_height).max(0)) };
                 #[allow(clippy::cast_precision_loss)]
-                let at = gsk::Transform::new().translate(&graphene::Point::new(x as f32, y as f32));
-                header.allocate(page_width, header_height, -1, Some(at));
+                let at = gsk::Transform::new().translate(&graphene::Point::new(0.0, y as f32));
+                header.allocate(width, header_height, -1, Some(at));
                 self.offset.set(y);
                 if let Some(scroller) = &scroller {
                     scroller.set_inset(f64::from(header_height));
