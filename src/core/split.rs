@@ -79,6 +79,26 @@ pub fn wrap(text: &str, columns: usize, tab_width: usize) -> Vec<String> {
     pieces
 }
 
+/// Where each character of `text` starts once [`wrap`] has expanded its
+/// tabs to `tab_width` columns, counted in characters, followed by where the
+/// text ends.
+pub fn expanded_offsets(text: &str, tab_width: usize) -> Vec<usize> {
+    let tab_width = tab_width.max(1);
+    let mut offsets = Vec::with_capacity(text.len() + 1);
+    let (mut offset, mut column) = (0, 0);
+    for c in text.chars() {
+        offsets.push(offset);
+        let (cells, count) = match c {
+            '\t' => (1, tab_width - column % tab_width),
+            c => (cell_width(c), 1),
+        };
+        column += cells * count;
+        offset += count;
+    }
+    offsets.push(offset);
+    offsets
+}
+
 /// How many columns `c` takes in a monospace font: two for wide East Asian
 /// characters and emoji, none for combining marks.
 fn cell_width(c: char) -> usize {
@@ -142,5 +162,15 @@ mod tests {
         assert_eq!(wrap("\tx", 10, 4), vec!["    x"]);
         assert_eq!(wrap("ab\tx", 10, 4), vec!["ab  x"]);
         assert_eq!(wrap("日本語", 4, 4), vec!["日本", "語"]);
+    }
+
+    #[test]
+    fn maps_characters_past_expanded_tabs() {
+        assert_eq!(expanded_offsets("", 4), [0]);
+        assert_eq!(expanded_offsets("a\tb", 4), [0, 1, 4, 5]);
+        assert_eq!(expanded_offsets("日\tb", 4), [0, 1, 3, 4]);
+        let text = "\tif x:\tgo";
+        let expanded: usize = wrap(text, 5, 4).iter().map(|p| p.chars().count()).sum();
+        assert_eq!(expanded_offsets(text, 4).last(), Some(&expanded));
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "agent-review"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 rust-version = "1.99"
 description = "Review the changes coding agents make and hand your feedback back to them"

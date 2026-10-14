@@ -27,6 +27,17 @@ const SETTLE_FRAMES: u32 = 12;
 /// How far the arrow keys scroll.
 const LINE_STEP: f64 = 48.0;
 
+/// Where in a file the panel holds the top of the screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Spot {
+    /// The file's header.
+    Header,
+    /// This far below the header, in pixels.
+    Offset(f64),
+    /// The line its diff pinned (see `DiffView::pin_top`).
+    Line,
+}
+
 /// What the panel shows for one file.
 pub struct FileData<'a> {
     pub path: &'a str,
@@ -90,8 +101,9 @@ struct Inner {
     filter: RefCell<String>,
     /// The file being read: the one at the top, or the last one worked in.
     current: RefCell<Option<String>>,
-    /// A file to keep at the top while the layout settles, and for how many more frames.
-    target: RefCell<Option<(String, u32)>>,
+    /// A file, and where in it, to keep at the top while the layout settles,
+    /// and for how many more frames.
+    target: RefCell<Option<(String, Spot, u32)>>,
     settle: RefCell<Option<gtk::TickCallbackId>>,
     /// Set while scrolling programmatically.
     scrolling: Cell<bool>,
@@ -175,6 +187,7 @@ impl ReviewPanel {
     /// Shows `files`, in order. Files already shown keep their diff, scroll
     /// position and whether they are collapsed.
     pub fn set_files(&self, files: Vec<FileData<'_>>) {
+        let held = self.pin_top();
         let content = self.0.scroller.content();
         let mut old: HashMap<String, Rc<Section>> =
             self.0.sections.borrow_mut().drain(..).map(|s| (s.path.clone(), s)).collect();
@@ -202,6 +215,22 @@ impl ReviewPanel {
         }
         self.0.sections.replace(sections);
         self.apply_filter();
+        if let Some((path, spot)) = held {
+            self.hold(&path, spot);
+        }
+    }
+
+    /// What is at the top of the screen, as the file and where in it, unless
+    /// something is already held there.
+    fn pin_top(&self) -> Option<(String, Spot)> {
+        if self.0.target.borrow().is_some() {
+            return None;
+        }
+        let value = self.0.scroller.window().vadjustment().value();
+        let section = self.section_at(value + self.0.scroller.inset())?;
+        let top = self.0.scroller.offset_of(&section.widget)?;
+        let pinned = section.view.borrow().as_ref().is_some_and(|view| section.expanded.get() && view.pin_top());
+        Some((section.path.clone(), if pinned { Spot::Line } else { Spot::Offset(value - top) }))
     }
 
     /// Signs new comments with `author`, or as unknown.
@@ -227,6 +256,7 @@ impl ReviewPanel {
     /// Removes every file, for another project or view.
     pub fn clear(&self) {
         self.set_files(Vec::new());
+        self.stop_settling();
         self.0.current.replace(None);
         self.0.scroller.window().vadjustment().set_value(0.0);
     }
@@ -641,8 +671,14 @@ impl ReviewPanel {
     /// Scrolls a file's header to the top, collapsed or not.
     fn hold_at_top(&self, path: &str) {
         self.0.current.replace(Some(path.to_owned()));
-        // Sizes above it may still change as diffs are laid out: hold it there for a few frames.
-        self.0.target.replace(Some((path.to_owned(), SETTLE_FRAMES)));
+        self.hold(path, Spot::Header);
+    }
+
+    /// Keeps `spot` in a file at the top of the screen: sizes above it may
+    /// still change as diffs are laid out, so for a few frames.
+    fn hold(&self, path: &str, spot: Spot) {
+        self.unpin();
+        self.0.target.replace(Some((path.to_owned(), spot, SETTLE_FRAMES)));
         self.apply_target();
         if self.0.settle.borrow().is_none() {
             let weak = self.weak();
@@ -660,23 +696,42 @@ impl ReviewPanel {
         }
     }
 
-    /// Scrolls to the target file; returns whether to keep doing so.
+    /// Scrolls to the target; returns whether to keep doing so.
     fn apply_target(&self) -> bool {
-        let Some((path, frames)) = self.0.target.borrow().clone() else { return false };
+        let Some((path, spot, frames)) = self.0.target.borrow().clone() else { return false };
         if frames == 0 {
+            self.unpin();
             self.0.target.replace(None);
             return false;
         }
-        self.0.target.replace(Some((path.clone(), frames - 1)));
-        if let Some(top) = self.section(&path).and_then(|s| self.0.scroller.offset_of(&s.widget)) {
+        self.0.target.replace(Some((path.clone(), spot, frames - 1)));
+        let Some(section) = self.section(&path) else { return true };
+        let adjustment = self.0.scroller.window().vadjustment();
+        let value = match spot {
+            Spot::Header => self.0.scroller.offset_of(&section.widget),
+            Spot::Offset(offset) => self.0.scroller.offset_of(&section.widget).map(|top| top + offset),
+            Spot::Line => {
+                section.view.borrow().as_ref().and_then(DiffView::pinned_delta).map(|delta| adjustment.value() + delta)
+            }
+        };
+        if let Some(value) = value {
             self.0.scrolling.set(true);
-            self.0.scroller.window().vadjustment().set_value(top);
+            adjustment.set_value(value);
             self.0.scrolling.set(false);
         }
         true
     }
 
+    /// Forgets the line a diff pinned for the target.
+    fn unpin(&self) {
+        let path = self.0.target.borrow().as_ref().map(|(path, _, _)| path.clone());
+        if let Some(view) = path.and_then(|p| self.section(&p)).and_then(|s| s.view.borrow().clone()) {
+            view.unpin();
+        }
+    }
+
     fn stop_settling(&self) {
+        self.unpin();
         self.0.target.replace(None);
         if let Some(tick) = self.0.settle.take() {
             tick.remove();

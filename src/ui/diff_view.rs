@@ -6,9 +6,9 @@
 //! diffs in the review panel's `Scroller`, but is only allocated the part on
 //! screen (see `Slice`), so long diffs stay fast.
 //!
-//! The buffer holds the diff lines without their `+`/`-` prefixes so the
-//! file's language highlighting applies; old/new line numbers and the change
-//! marker are drawn in a custom gutter. Comment cards are read-only child
+//! The buffer holds the diff lines without their `+`/`-` prefixes, coloured
+//! with the highlighting of the side of the file each comes from (see
+//! `highlight`); old/new line numbers are drawn in a custom gutter. Comment cards are read-only child
 //! widgets anchored on otherwise empty buffer lines.
 //!
 //! The comment composer is deliberately *not* a child of the text view: an
@@ -30,11 +30,14 @@ use crate::core::align::{self, Run};
 use crate::core::diff::{DiffLine, FileDiff, Gap, LineKind};
 use crate::core::review::{Author, LineAnchor, Note, Side};
 use crate::core::split;
+use crate::ui::highlight::Highlighter;
 use crate::ui::scroller::{Scroller, Slice};
 use crate::ui::util;
 
 /// Comment cards are not stretched wider than this.
 const MAX_THREAD_WIDTH: i32 = 900;
+/// Lines highlighted above and below those on screen, at most.
+const MAX_COLORED_LINES: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RowKind {
@@ -69,11 +72,14 @@ struct Row {
     old_index: Option<usize>,
     /// The lines a `Hidden` row stands for.
     gap: Option<Gap>,
+    /// The text the row shows from each side of the file, to colour it with
+    /// that side's highlighting.
+    pieces: [Option<Piece>; 2],
 }
 
 impl Row {
     const fn plain(kind: RowKind) -> Self {
-        Self { kind, old_no: None, new_no: None, index: None, old_index: None, gap: None }
+        Self { kind, old_no: None, new_no: None, index: None, old_index: None, gap: None, pieces: [None, None] }
     }
 
     /// The `FileDiff::lines()` the row shows, once each.
@@ -83,6 +89,25 @@ impl Row {
 
     fn shows(&self, index: usize) -> bool {
         self.indices().any(|i| i == index)
+    }
+}
+
+/// Part of a line of one side of the file, shown in a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Piece {
+    side: Side,
+    /// The line's number on that side.
+    number: u32,
+    /// The characters of the line shown, counted with its tabs expanded side by side.
+    chars: (usize, usize),
+    /// Where in the row they start.
+    at: usize,
+}
+
+impl Piece {
+    /// A whole line, starting the row.
+    fn whole(side: Side, number: Option<u32>) -> [Option<Self>; 2] {
+        [number.map(|number| Self { side, number, chars: (0, usize::MAX), at: 0 }), None]
     }
 }
 
@@ -170,8 +195,9 @@ struct Inner {
     diff: RefCell<Option<FileDiff>>,
     notes: RefCell<Vec<Note>>,
     target: RefCell<Option<Target>>,
-    /// Child widgets in the buffer, resized with the view.
-    children: RefCell<Vec<gtk::Widget>>,
+    /// Comment threads in the buffer, resized with the view, with the side
+    /// they go on side by side.
+    children: RefCell<Vec<(gtk::Widget, Option<Side>)>>,
     /// The arrows on rows of hidden lines, also in the buffer.
     expanders: RefCell<Vec<gtk::Widget>>,
     child_width: Cell<i32>,
@@ -201,12 +227,25 @@ struct Inner {
     columns: Cell<usize>,
     /// Side by side, where the divider and the end of the line are, in pixels.
     tab_stops: Cell<(i32, i32)>,
+    /// Side by side, the width of a character, in pixels.
+    cell: Cell<i32>,
+    /// Each side of the file, old then new, highlighted on its own.
+    highlight: [Highlighter; 2],
+    /// The buffer line that was at the top of the screen, followed through
+    /// changes, and how far down it the top was, in pixels.
+    pin: Cell<Option<(usize, f64)>>,
+    /// Which buffer lines have their highlighting, done for those on screen.
+    colored: RefCell<Vec<bool>>,
+    /// Set while the lines on screen are waiting to be coloured.
+    coloring: Cell<bool>,
 }
 
 impl DiffView {
     /// A diff scrolling in `scroller`, searched with `search`, which all files share.
     pub fn new(scroller: &Scroller, search: &sourceview5::SearchSettings) -> Self {
         let buffer = sourceview5::Buffer::new(None);
+        // Coloured from `highlight` instead.
+        buffer.set_highlight_syntax(false);
         buffer.set_highlight_matching_brackets(false);
         buffer.set_enable_undo(false);
         let view = sourceview5::View::with_buffer(&buffer);
@@ -253,6 +292,7 @@ impl DiffView {
             .build();
         overlay.add_overlay(&button);
 
+        let highlight = [Highlighter::new(&buffer.tag_table()), Highlighter::new(&buffer.tag_table())];
         let this = Self(Rc::new(Inner {
             root,
             search,
@@ -290,6 +330,11 @@ impl DiffView {
             split: Cell::new(false),
             columns: Cell::new(0),
             tab_stops: Cell::new((0, 0)),
+            cell: Cell::new(0),
+            highlight,
+            pin: Cell::new(None),
+            colored: RefCell::default(),
+            coloring: Cell::new(false),
         }));
         this.create_tags();
         this.update_style_scheme();
@@ -395,9 +440,34 @@ impl DiffView {
             .scheme(if dark { "Adwaita-dark" } else { "Adwaita" })
             .or_else(|| manager.scheme(if dark { "classic-dark" } else { "classic" }));
         self.0.buffer.set_style_scheme(scheme.as_ref());
+        for side in &self.0.highlight {
+            side.set_style_scheme(scheme.as_ref());
+        }
     }
 
     fn connect_signals(&self) {
+        // The view is shown, as its file is expanded, or the slice of it on screen moves.
+        let weak = self.weak();
+        self.0.view.connect_map(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                DiffView(inner).queue_coloring();
+            }
+        });
+        if let Some(adjustment) = self.0.view.vadjustment() {
+            let weak = self.weak();
+            adjustment.connect_value_changed(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    DiffView(inner).queue_coloring();
+                }
+            });
+            let weak = self.weak();
+            adjustment.connect_changed(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    DiffView(inner).queue_coloring();
+                }
+            });
+        }
+
         let weak = self.weak();
         adw::StyleManager::default().connect_dark_notify(move |_| {
             if let Some(inner) = weak.upgrade() {
@@ -694,6 +764,49 @@ impl DiffView {
         Some((f64::from(top), f64::from(bottom)))
     }
 
+    /// Remembers the line at the top of the screen, if it is in this diff, to
+    /// bring it back there with `pinned_delta` once the diff changes; returns
+    /// whether it is.
+    pub fn pin_top(&self) -> bool {
+        let view = &self.0.view;
+        let top = self.0.scroller.visible_span(view).map(|(top, _)| top);
+        let pin = top.filter(|&top| view.is_mapped() && top >= 0.0 && top < f64::from(view.height())).and_then(|top| {
+            let line = self.line_at_view_y(top);
+            let (line_top, _) = self.line_span(line, line)?;
+            Some((usize::try_from(line).ok()?, top - line_top))
+        });
+        self.0.pin.set(pin);
+        pin.is_some()
+    }
+
+    /// How far to scroll to bring the pinned line back to where it was at the top of the screen.
+    pub fn pinned_delta(&self) -> Option<f64> {
+        let (line, offset) = self.0.pin.get()?;
+        let (top, _) = self.0.scroller.visible_span(&self.0.view).filter(|_| self.0.view.is_mapped())?;
+        let line = i32::try_from(line).ok()?;
+        let (line_top, _) = self.line_span(line, line)?;
+        Some(line_top + offset - top)
+    }
+
+    pub fn unpin(&self) {
+        self.0.pin.set(None);
+    }
+
+    /// Follows the pinned line as buffer lines `at..at + removed` are replaced with `inserted` others.
+    fn move_pin(&self, at: usize, removed: usize, inserted: usize) {
+        if let Some((line, offset)) = self.0.pin.get()
+            && line >= at
+        {
+            let pin = if line >= at + removed {
+                (line + inserted - removed, offset)
+            } else {
+                // The line was rewritten: keep to its place among the new ones.
+                (at + (line - at).min(inserted.saturating_sub(1)), if line - at < inserted { offset } else { 0.0 })
+            };
+            self.0.pin.set(Some(pin));
+        }
+    }
+
     /// Shows the old and new sides beside each other, or the changes one above the other.
     pub fn set_split(&self, split: bool) {
         if self.0.split.replace(split) != split {
@@ -719,6 +832,8 @@ impl DiffView {
         if cell <= 0.0 {
             return false;
         }
+        #[allow(clippy::cast_possible_truncation)]
+        self.0.cell.set(cell.ceil() as i32);
         let half = width / 2;
         // Each half leaves a character before the divider, and the new one a space after it.
         let fit = |pixels: i32| (f64::from(pixels) / cell).floor().max(0.0);
@@ -748,10 +863,12 @@ impl DiffView {
         let width = (inner.scroller.window().width() - gutter_width - 64).clamp(240, MAX_THREAD_WIDTH);
         if width != inner.child_width.get() {
             inner.child_width.set(width);
-            for child in inner.children.borrow().iter() {
-                child.set_width_request(width);
-            }
             inner.history.content.set_width_request(width);
+        }
+        for (child, side) in inner.children.borrow().iter() {
+            let (start, width) = self.thread_place(*side);
+            child.set_margin_start(start);
+            child.set_width_request(width);
         }
         // History cards line up with the inline ones.
         inner.history.content.set_margin_start(gutter_width + inner.view.left_margin());
@@ -759,6 +876,7 @@ impl DiffView {
         // Reserve room for the composer below (or above) its line.
         let composer = &inner.composer.root;
         let gap = inner.gap.get().filter(|_| composer.is_visible());
+        let (_, width) = self.thread_place(self.target_side());
         let height = if gap.is_some() { composer.measure(gtk::Orientation::Vertical, width).1 } else { 0 };
         let reserved = if height > 0 { height + 16 } else { 0 };
         if reserved != inner.gap_height.get() {
@@ -773,15 +891,38 @@ impl DiffView {
         }
     }
 
+    /// Where comments on `side` go across the view, as their offset from the
+    /// start of the code and their width: side by side, below their half.
+    fn thread_place(&self, side: Option<Side>) -> (i32, i32) {
+        let inner = &self.0;
+        let full = inner.child_width.get();
+        let ((half, end), cell) = (inner.tab_stops.get(), inner.cell.get());
+        if !inner.split.get() || half <= 0 {
+            return (0, full);
+        }
+        // The new half starts after the divider and a space.
+        let (start, room) = match side {
+            None => return (0, full),
+            Some(Side::Old) => (0, half - 2 * cell),
+            Some(Side::New) => (half + 2 * cell, end - half - 2 * cell),
+        };
+        (start, room.clamp(160, MAX_THREAD_WIDTH))
+    }
+
+    /// The side the composer's comment is on.
+    fn target_side(&self) -> Option<Side> {
+        self.0.target.borrow().as_ref().and_then(|t| t.anchor.as_ref()).map(|a| a.side)
+    }
+
     /// Where the composer floats: over the gap below its line.
     fn composer_rect(&self) -> Option<gtk::gdk::Rectangle> {
         let inner = &self.0;
         let line = inner.gap.get()?;
-        let width = inner.child_width.get();
+        let (start, width) = self.thread_place(self.target_side());
         let (_, height, _, _) = inner.composer.root.measure(gtk::Orientation::Vertical, width);
         let (y, _) = inner.view.line_yrange(&iter_at_line(&inner.buffer, line));
         let (x, top) = self.to_overlay(0, y + 8)?;
-        Some(gtk::gdk::Rectangle::new(x + inner.view.left_margin(), top, width, height))
+        Some(gtk::gdk::Rectangle::new(x + inner.view.left_margin() + start, top, width, height))
     }
 
     /// Converts buffer coordinates to overlay coordinates.
@@ -1030,14 +1171,14 @@ impl DiffView {
         // Every line, the last included, ends in a newline so line tags can apply to it.
         let mut text = String::new();
         let mut rows = Vec::with_capacity(diff.line_count() + by_line.len() + 2);
-        let mut children: Vec<gtk::Widget> = Vec::new();
+        let mut children: Vec<(gtk::Widget, Option<Side>)> = Vec::new();
 
         // The composer gets an empty line of its own, below the target lines and their comments.
         let spacer_after = target.as_ref().map(|t| t.range.map(|(_, last)| last));
         if !top.is_empty() {
             text.push('\n');
             rows.push(Row::plain(RowKind::Widget));
-            children.push(self.build_thread(&top, diff).upcast());
+            children.push((self.build_thread(&top, diff).upcast(), None));
         }
         if spacer_after == Some(None) {
             text.push('\n');
@@ -1051,6 +1192,10 @@ impl DiffView {
         // from the file, else a row standing for them.
         let source_ref = self.0.source.borrow();
         let source = source_ref.as_deref().filter(|lines| diff.matches_new_side(lines));
+        let language = sourceview5::LanguageManager::default().guess_language(Some(diff.path()), None);
+        for (side, lines) in self.0.highlight.iter().zip(diff.sides(source)) {
+            side.set(language.as_ref(), &lines);
+        }
         let gaps = diff.gaps(source.and_then(|lines| u32::try_from(lines.len()).ok()));
         let mut revealed = self.0.revealed.borrow_mut();
         let mut gap_rows = |text: &mut String, rows: &mut Vec<Row>, before: usize, context: &str| {
@@ -1078,7 +1223,8 @@ impl DiffView {
                         if let Some(thread) = by_line.get(&i) {
                             text.push('\n');
                             rows.push(Row::plain(RowKind::Widget));
-                            children.push(self.build_thread(thread, diff).upcast());
+                            let side = side_of_kind(hunk.lines[i - index].kind);
+                            children.push((self.build_thread(thread, diff).upcast(), Some(side)));
                         }
                     }
                     if row.indices().any(|i| spacer_after == Some(Some(i))) {
@@ -1092,6 +1238,7 @@ impl DiffView {
             for line in &hunk.lines {
                 text.push_str(&line.text);
                 text.push('\n');
+                let side = side_of_kind(line.kind);
                 rows.push(Row {
                     kind: RowKind::Line(line.kind),
                     old_no: line.old_no,
@@ -1099,11 +1246,12 @@ impl DiffView {
                     index: Some(index),
                     old_index: None,
                     gap: None,
+                    pieces: Piece::whole(side, if side == Side::Old { line.old_no } else { line.new_no }),
                 });
                 if let Some(thread) = by_line.get(&index) {
                     text.push('\n');
                     rows.push(Row::plain(RowKind::Widget));
-                    children.push(self.build_thread(thread, diff).upcast());
+                    children.push((self.build_thread(thread, diff).upcast(), Some(side)));
                 }
                 if spacer_after == Some(Some(index)) {
                     text.push('\n');
@@ -1129,20 +1277,18 @@ impl DiffView {
         self.0.gutter.set_width_request(gutter_width);
 
         let buffer = &self.0.buffer;
-        let language = sourceview5::LanguageManager::default().guess_language(Some(diff.path()), None);
-        if buffer.language() != language {
-            buffer.set_language(language.as_ref());
-        }
         drop(notes);
         let hunks = diff.hunks.len();
         drop(diff_ref);
 
         // Detach the cards before their anchors are deleted: GTK crashes if a
         // child under the pointer is removed while the buffer is mid-update.
-        for child in self.0.children.borrow_mut().drain(..).chain(self.0.expanders.borrow_mut().drain(..)) {
+        let threads = self.0.children.borrow_mut().drain(..).map(|(child, _)| child).collect::<Vec<_>>();
+        for child in threads.into_iter().chain(self.0.expanders.borrow_mut().drain(..)) {
             self.0.view.remove(&child);
         }
         if change == Change::File || !self.update_lines(&rows, &text) {
+            self.unpin();
             buffer.set_text(&text);
             self.0.rows.replace(rows);
             let lines = self.0.rows.borrow().len();
@@ -1150,7 +1296,7 @@ impl DiffView {
             buffer.place_cursor(&buffer.start_iter());
         }
         self.apply_target(target.as_ref());
-        for (line, child) in self.widget_lines().into_iter().zip(&children) {
+        for (line, (child, _)) in self.widget_lines().into_iter().zip(&children) {
             // Threads on lines that were kept still have their anchor.
             let anchor = iter_at_line(buffer, line)
                 .child_anchor()
@@ -1173,6 +1319,9 @@ impl DiffView {
             expanders.push(expander.upcast());
         }
         self.0.expanders.replace(expanders);
+        // Lines may be highlighted differently, even unchanged ones.
+        self.0.colored.replace(vec![false; self.0.rows.borrow().len()]);
+        self.queue_coloring();
         self.show_history(&history);
         self.relayout();
         if let Some(fingerprint) = load {
@@ -1267,6 +1416,7 @@ impl DiffView {
                             buffer.insert(&mut end, &format!("\n{}", &added[..added.len() - 1]));
                         }
                     }
+                    self.move_pin(line, delete, insert);
                     // From the line before, whose newline may have moved.
                     self.retag_lines(line.saturating_sub(1)..line + insert);
                     line += insert;
@@ -1299,7 +1449,94 @@ impl DiffView {
         ] {
             buffer.remove_tag_by_name(tag, &from, &to);
         }
+        self.uncolor(&from, &to);
         self.apply_line_tags(lines);
+    }
+
+    /// Takes the highlighting off the text from `from` to `to`.
+    fn uncolor(&self, from: &gtk::TextIter, to: &gtk::TextIter) {
+        for tag in self.0.highlight.iter().flat_map(Highlighter::tags) {
+            self.0.buffer.remove_tag(&tag, from, to);
+        }
+    }
+
+    /// Colours the lines on screen once the view is laid out: at the start
+    /// of the frame after the next, as lines are laid out during a frame.
+    fn queue_coloring(&self) {
+        if self.0.coloring.replace(true) {
+            return;
+        }
+        let weak = self.weak();
+        let frames = Cell::new(0);
+        self.0.view.add_tick_callback(move |_, _| {
+            frames.set(frames.get() + 1);
+            if frames.get() < 2 {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(inner) = weak.upgrade() {
+                inner.coloring.set(false);
+                DiffView(inner).color_visible();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// Colours the lines on screen, and as many again either side of them,
+    /// that are not yet.
+    fn color_visible(&self) {
+        let view = &self.0.view;
+        let Some((top, bottom)) = self.0.scroller.visible_span(view).filter(|_| view.is_mapped()) else { return };
+        if bottom <= top {
+            return;
+        }
+        // Lines off screen are not laid out yet, so they are counted rather than measured.
+        let (first, last) = (self.line_at_view_y(top), self.line_at_view_y(bottom));
+        let (Ok(first), Ok(last)) = (usize::try_from(first), usize::try_from(last)) else { return };
+        let margin = (last - first + 1).min(MAX_COLORED_LINES);
+        let lines: Vec<usize> = {
+            let mut colored = self.0.colored.borrow_mut();
+            (first.saturating_sub(margin)..=last + margin)
+                .filter(|&line| colored.get_mut(line).is_some_and(|done| !std::mem::replace(done, true)))
+                .take(3 * MAX_COLORED_LINES)
+                .collect()
+        };
+        for line in lines {
+            self.color_line(line);
+        }
+    }
+
+    /// Colours buffer line `line` with the highlighting of the lines it shows.
+    fn color_line(&self, line: usize) {
+        let Some(row) = self.0.rows.borrow().get(line).copied() else { return };
+        let buffer = &self.0.buffer;
+        let Ok(number) = i32::try_from(line) else { return };
+        self.uncolor(&iter_at_line(buffer, line), &iter_at_line(buffer, line + 1));
+        let tab = usize::try_from(self.0.view.tab_width()).unwrap_or(8);
+        for piece in row.pieces.into_iter().flatten() {
+            let highlight = &self.0.highlight[usize::from(piece.side == Side::New)];
+            // Side by side, where the line's characters went once its tabs were expanded.
+            let offsets = (self.0.split.get())
+                .then(|| highlight.line(piece.number))
+                .flatten()
+                .map(|text| split::expanded_offsets(&text, tab));
+            let expanded = |offset: usize| match &offsets {
+                Some(offsets) => offsets[offset.min(offsets.len() - 1)],
+                None => offset,
+            };
+            for span in highlight.spans(piece.number) {
+                let (start, end) = (expanded(span.start).max(piece.chars.0), expanded(span.end).min(piece.chars.1));
+                if start >= end {
+                    continue;
+                }
+                let moved = |offset: usize| i32::try_from(offset - piece.chars.0 + piece.at).ok();
+                if let (Some(start), Some(end)) = (moved(start), moved(end))
+                    && let (Some(start), Some(end)) =
+                        (buffer.iter_at_line_offset(number, start), buffer.iter_at_line_offset(number, end))
+                {
+                    buffer.apply_tag(&span.tag, &start, &end);
+                }
+            }
+        }
     }
 
     fn widget_lines(&self) -> Vec<usize> {
@@ -1337,6 +1574,7 @@ impl DiffView {
         for (tag, start, end) in runs {
             self.tag_lines(tag, start, end);
         }
+
         for (line, old, new) in pairs {
             self.tag_halves(line, old, new);
         }
@@ -1491,11 +1729,15 @@ impl DiffView {
         if let Some(line) = self.0.gap.take() {
             buffer.delete(&mut iter_at_line(buffer, line), &mut iter_at_line(buffer, line + 1));
             self.0.rows.borrow_mut().remove(line);
+            self.0.colored.borrow_mut().remove(line);
+            self.move_pin(line, 1, 0);
         }
         if let Some(target) = &target {
             let line = self.spacer_line(target);
             buffer.insert(&mut iter_at_line(buffer, line), "\n");
             self.0.rows.borrow_mut().insert(line, Row::plain(RowKind::Spacer));
+            self.0.colored.borrow_mut().insert(line, true);
+            self.move_pin(line, 0, 1);
             // Don't let it take the colour of the line it was inserted into.
             buffer.remove_all_tags(&iter_at_line(buffer, line), &iter_at_line(buffer, line + 1));
         }
@@ -1695,17 +1937,35 @@ fn push_pair(
         line.map_or_else(|| vec![String::new()], |l| split::wrap(&l.text, columns.width, columns.tab))
     };
     let (old, new) = (wrap(lines.0), wrap(lines.1));
+    let numbers = [lines.0.and_then(|l| l.old_no), lines.1.and_then(|l| l.new_no)];
+    // How far into each side's line, tabs expanded, its next piece starts.
+    let mut from = [0, 0];
     for i in 0..old.len().max(new.len()) {
         let piece = |pieces: &[String]| pieces.get(i).map_or("", String::as_str).to_owned();
-        let _ = writeln!(text, "{}\t│ {}\t", piece(&old), piece(&new));
+        let texts = [piece(&old), piece(&new)];
+        let _ = writeln!(text, "{}\t│ {}\t", texts[0], texts[1]);
+        // The new half starts after the old one, its tab, the divider and a space.
+        let at = [0, texts[0].chars().count() + 3];
+        let mut pieces = [None, None];
+        for (side, which) in [Side::Old, Side::New].into_iter().enumerate() {
+            let len = texts[side].chars().count();
+            pieces[side] = numbers[side].map(|number| Piece {
+                side: which,
+                number,
+                chars: (from[side], from[side] + len),
+                at: at[side],
+            });
+            from[side] += len;
+        }
         rows.push(Row {
             kind: RowKind::Pair(lines.0.map(|l| l.kind), lines.1.map(|l| l.kind)),
             // Numbered on the first row only.
-            old_no: lines.0.and_then(|l| l.old_no).filter(|_| i == 0),
-            new_no: lines.1.and_then(|l| l.new_no).filter(|_| i == 0),
+            old_no: numbers[0].filter(|_| i == 0),
+            new_no: numbers[1].filter(|_| i == 0),
             index: indices.1,
             old_index: indices.0,
             gap: None,
+            pieces,
         });
     }
 }
@@ -1745,6 +2005,7 @@ fn push_gap(
             index: None,
             old_index: None,
             gap: None,
+            pieces: Piece::whole(Side::New, Some(new_no)),
         });
     }
 }
@@ -1841,6 +2102,14 @@ fn line_keys<'a>(rows: &[Row], lines: &[&'a str]) -> Vec<(RowKind, &'a str)> {
             kind => (kind, *line),
         })
         .collect()
+}
+
+/// The side a diff line's comments are on.
+const fn side_of_kind(kind: LineKind) -> Side {
+    match kind {
+        LineKind::Removed => Side::Old,
+        LineKind::Context | LineKind::Added => Side::New,
+    }
 }
 
 /// The tab ending the old half of the side-by-side row starting at `start`:

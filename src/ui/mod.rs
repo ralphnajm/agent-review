@@ -2,6 +2,7 @@
 
 mod diff_view;
 mod file_list;
+mod highlight;
 mod project_switcher;
 mod review_panel;
 mod reviews_dialog;

@@ -159,6 +159,38 @@ impl FileDiff {
         self.hunks.iter().flat_map(|h| &h.lines)
     }
 
+    /// The numbered lines of each side of the file, old then new: all of them
+    /// given `new_side`, the new side's lines (see [`Self::matches_new_side`]),
+    /// else only those in the diff.
+    pub fn sides<'a, S: AsRef<str>>(&'a self, new_side: Option<&'a [S]>) -> [Vec<(u32, &'a str)>; 2] {
+        let (mut old, mut new) = (Vec::new(), Vec::new());
+        let gaps = new_side.map(|lines| self.gaps(u32::try_from(lines.len()).ok())).unwrap_or_default();
+        // The unchanged lines left out before hunk `before`, read from the new side.
+        let unchanged = |old: &mut Vec<(u32, &'a str)>, before: usize| {
+            let (Some(gap), Some(lines)) = (gaps.iter().find(|g| g.before == before), new_side) else { return };
+            for offset in 0..gap.len {
+                let line = usize::try_from(gap.new_start + offset - 1).ok().and_then(|i| lines.get(i));
+                old.push((gap.old_start + offset, line.map_or("", AsRef::as_ref)));
+            }
+        };
+        for (before, hunk) in self.hunks.iter().enumerate() {
+            unchanged(&mut old, before);
+            for line in &hunk.lines {
+                if let (LineKind::Context | LineKind::Removed, Some(n)) = (line.kind, line.old_no) {
+                    old.push((n, line.text.as_str()));
+                }
+                if let (LineKind::Context | LineKind::Added, Some(n)) = (line.kind, line.new_no) {
+                    new.push((n, line.text.as_str()));
+                }
+            }
+        }
+        unchanged(&mut old, self.hunks.len());
+        if let Some(lines) = new_side {
+            new = (1..).zip(lines.iter().map(AsRef::as_ref)).collect();
+        }
+        [old, new]
+    }
+
     /// Index (into [`Self::lines`]) of a line by its number on one side.
     /// The old side only matches removed lines, the new side the others.
     pub fn locate(&self, old_side: bool, number: u32) -> Option<usize> {
@@ -498,6 +530,19 @@ new mode 100755
         let edited: Vec<&str> = "a b c d e f g h i j".split(' ').collect();
         assert!(!diff.matches_new_side(&edited));
         assert!(!diff.matches_new_side(&new[..5]));
+    }
+
+    #[test]
+    fn rebuilds_each_side_of_the_file() {
+        let diff = &parse("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -2,3 +2,3 @@\n b\n-c\n+C\n d\n")[0];
+        let new: Vec<&str> = "a b C d e".split(' ').collect();
+        let [old_side, new_side] = diff.sides(Some(&new));
+        assert_eq!(old_side, [(1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e")]);
+        assert_eq!(new_side, [(1, "a"), (2, "b"), (3, "C"), (4, "d"), (5, "e")]);
+        // Without the file, only the lines in the diff.
+        let [old_side, new_side] = diff.sides::<&str>(None);
+        assert_eq!(old_side, [(2, "b"), (3, "c"), (4, "d")]);
+        assert_eq!(new_side, [(2, "b"), (3, "C"), (4, "d")]);
     }
 
     #[test]

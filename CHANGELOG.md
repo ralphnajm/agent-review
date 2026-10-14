@@ -5,6 +5,16 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.8.2] - 2026-10-14
+
+### Fixed
+
+- Syntax highlighting reads the old and new versions of a file each on their own, so a string or comment changed
+  on one side no longer miscolours the code around it, in either view.
+- Side by side, comments sit below the side they are on, rather than always below the old one.
+- When the repository changes while you are reviewing, the line at the top of the screen stays there, even when
+  lines are added or removed above it in the same file or in files above.
+
 ## [0.8.1] - 2026-10-13
 
 ### Fixed
