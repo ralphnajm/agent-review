@@ -5,6 +5,19 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.9.0] - 2026-10-14
+
+### Added
+
+- **Self-Update** in the main menu updates Agent Review to the latest release the way you installed it: with apt
+  or dnf for the `.deb` and `.rpm` packages (asking for your password), or by building the release's source for
+  `make install`. Agent Review then restarts as the new version and reopens your project.
+
+### Fixed
+
+- Agent Review no longer crashes when a file you marked reviewed changes and opens again for another look. The
+  reopened file also no longer takes the keyboard focus.
+
 ## [0.8.2] - 2026-10-14
 
 ### Fixed

@@ -1715,11 +1715,16 @@ impl DiffView {
 
     /// Closes the composer, discarding what was typed.
     fn close_composer(&self) {
+        let open = self.0.composer.root.is_visible();
         self.0.composer.text.buffer().set_text("");
         self.0.selection_origin.set(None);
         self.0.composer.root.set_visible(false);
         self.set_target(None);
-        self.0.view.grab_focus();
+        // Only give focus back from a closed composer: a view shown for the
+        // first time, e.g. a reviewed file reopening, must not steal it.
+        if open {
+            self.0.view.grab_focus();
+        }
     }
 
     /// Moves the target highlight and the composer's gap in place: re-rendering

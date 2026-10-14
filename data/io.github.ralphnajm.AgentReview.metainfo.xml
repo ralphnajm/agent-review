@@ -37,6 +37,7 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.9.0" date="2026-10-14"/>
     <release version="0.8.2" date="2026-10-14"/>
     <release version="0.8.1" date="2026-10-13"/>
     <release version="0.8.0" date="2026-10-13"/>

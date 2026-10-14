@@ -106,6 +106,9 @@ sudo apt install ./agent-review_*.deb    # Ubuntu / Debian
 sudo dnf install ./agent-review-*.rpm    # Fedora
 ```
 
+Once installed, **Self-Update** in the main menu updates Agent Review to the latest release, however you
+installed it, and restarts it.
+
 ### From source
 
 With the [build dependencies](#building) installed:
@@ -200,6 +203,7 @@ src/
     mcp.rs        MCP server (`agent-review --mcp`) agents pull reviews from
     watcher.rs    inotify watchers for the repository and the review queue
     store.rs      settings and review persistence (XDG directories)
+    update.rs     self-update by running scripts/update.sh from the main branch
   ui/           GTK widgets
     window.rs     main window, actions and state
     diff_view.rs  GtkSourceView diff with inline comment threads

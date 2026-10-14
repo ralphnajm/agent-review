@@ -21,6 +21,7 @@ use crate::core::queue::{self, Queue};
 use crate::core::review::{ApprovalState, Author, LineAnchor, ReviewState};
 use crate::core::status::{DiffMode, StatusEntry};
 use crate::core::store::{self, Settings};
+use crate::core::update;
 use crate::core::{self as app_core, watcher};
 use crate::ui::file_list::{FileItem, FileList};
 use crate::ui::project_switcher::ProjectSwitcher;
@@ -197,6 +198,7 @@ impl Window {
             sidebar.set_visible(!sidebar.is_visible());
         });
         self.add_action("clear-review", Self::confirm_clear_review);
+        self.add_action("self-update", Self::self_update);
 
         let mode =
             gio::SimpleAction::new_stateful("diff-mode", Some(glib::VariantTy::STRING), &self.mode().id().to_variant());
@@ -344,9 +346,14 @@ impl Window {
         });
         let weak = self.weak();
         w.review.connect_current(move |path| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).follow(path);
-            }
+            // The panel can report this while a render still borrows the state.
+            let weak = weak.clone();
+            let path = path.to_owned();
+            glib::idle_add_local_once(move || {
+                if let Some(inner) = weak.upgrade() {
+                    Self(inner).follow(&path);
+                }
+            });
         });
         let weak = self.weak();
         w.review.connect_load(move |path, reply| {
@@ -997,6 +1004,33 @@ impl Window {
         }
         self.0.w.toasts.add_toast(toast);
     }
+
+    // ----- Self-update ---------------------------------------------------
+
+    /// Runs the update script; when it updated, quits so the script can start the new version.
+    fn self_update(&self) {
+        self.set_action_enabled("self-update", false);
+        let progress = adw::Toast::builder().title("Updating Agent Review…").timeout(0).build();
+        self.0.w.toasts.add_toast(progress.clone());
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(update::run).await;
+            progress.dismiss();
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Self(inner);
+            this.set_action_enabled("self-update", true);
+            match result {
+                Ok(Ok(update::Outcome::Updated)) => {
+                    if let Some(app) = this.0.w.window.application() {
+                        app.quit();
+                    }
+                }
+                Ok(Ok(update::Outcome::UpToDate)) => this.toast("Agent Review is up to date"),
+                Ok(Err(err)) => this.toast(&format!("Could not update: {err}")),
+                Err(_) => this.toast("The update failed unexpectedly"),
+            }
+        });
+    }
 }
 
 /// The header details of a file after its line counts: kind of change and rename.
@@ -1089,6 +1123,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
     section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
+    section.append(Some("Self-Update"), Some("win.self-update"));
     section.append(Some("About Agent Review"), Some("app.about"));
     main_menu.append_section(None, &section);
     let menu_button = gtk::MenuButton::builder()

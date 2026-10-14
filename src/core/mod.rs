@@ -12,6 +12,7 @@ pub mod review;
 pub mod split;
 pub mod status;
 pub mod store;
+pub mod update;
 pub mod watcher;
 
 /// Current time as Unix seconds.
