@@ -1,5 +1,7 @@
 //! Parsing of `git status --porcelain=v2 -z --branch`.
 
+use crate::core::diff::FileDiff;
+
 /// The kind of change recorded for one side (index or worktree) of a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -107,6 +109,21 @@ pub struct StatusEntry {
 }
 
 impl StatusEntry {
+    /// The entry for a file a commit changed, recorded as a staged change.
+    pub fn committed(diff: &FileDiff) -> Self {
+        let renamed_from = diff.renamed_from().map(str::to_owned);
+        let kind = if diff.is_new {
+            ChangeKind::Added
+        } else if diff.is_deleted {
+            ChangeKind::Deleted
+        } else if renamed_from.is_some() {
+            ChangeKind::Renamed
+        } else {
+            ChangeKind::Modified
+        };
+        Self { path: diff.path().to_owned(), orig_path: renamed_from, staged: Some(kind), unstaged: None }
+    }
+
     pub fn is_untracked(&self) -> bool {
         self.unstaged == Some(ChangeKind::Untracked)
     }

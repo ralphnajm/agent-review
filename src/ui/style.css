@@ -57,6 +57,26 @@
 .file-panel { background: @sidebar_bg_color; }
 paned > separator { background: alpha(currentColor, 0.1); min-width: 1px; }
 
+/* What is being reviewed, above the tabs: opens the history. */
+menubutton.commit-button > button {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  background: alpha(currentColor, 0.07);
+  box-shadow: none;
+}
+menubutton.commit-button > button:hover { background: alpha(currentColor, 0.1); }
+.commit-button .commit-title { font-weight: 600; }
+.commit-id { font-family: monospace; font-size: 0.85em; opacity: 0.7; }
+.commit-body { font-size: 0.9em; opacity: 0.8; }
+
+/* The history: rows touch, so the lines of the graph join up. */
+.history-list { background: none; }
+.history-list > row { padding: 0 8px 0 2px; margin: 0; border-radius: 6px; }
+.history-subject { font-weight: 500; }
+.ref-chip { font-size: 0.75em; padding: 0 6px; }
+.ref-chip.head { background: alpha(@accent_bg_color, 0.2); color: @accent_color; }
+
 .mode-tabs {
   padding: 2px;
   border-radius: 8px;

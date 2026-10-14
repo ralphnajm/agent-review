@@ -85,9 +85,10 @@ fn build_group(entry: &Entry, now: i64) -> adw::PreferencesGroup {
     let comments = &entry.review.comments;
     let resolved = comments.len() - entry.open().count();
     let noun = if comments.len() == 1 { "comment" } else { "comments" };
+    let on = entry.review.commit.as_ref().map_or_else(String::new, |c| format!("On {} {} · ", c.short_id(), c.subject));
     let group = adw::PreferencesGroup::builder()
         .title(format!("Posted {}", util::relative_time(entry.review.posted_at, now)))
-        .description(format!("{resolved} of {} {noun} resolved", comments.len()))
+        .description(format!("{on}{resolved} of {} {noun} resolved", comments.len()))
         .build();
 
     for comment in comments {

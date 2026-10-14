@@ -17,13 +17,14 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::core::feedback;
 use crate::core::git::Repo;
-use crate::core::queue::{self, PostedComment, Queue};
+use crate::core::queue::{PostedComment, Queue};
+use crate::core::review::ReviewedCommit;
 
 /// Protocol revisions the server can speak; the newest is offered by default.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
-const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews your uncommitted \
-changes and leaves comments on them. When the user asks you to pull, fetch or check their review, call \
+const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews your changes, \
+uncommitted or committed, and leaves comments on them. When the user asks you to pull, fetch or check their review, call \
 get_review, address each comment, then call resolve_comments with the ids of the comments you addressed.";
 
 /// Serves requests from stdin until it closes.
@@ -100,7 +101,8 @@ impl Server {
     fn get_review(&self, arguments: &Value) -> Result<String> {
         let (root, queue) = self.queue(arguments)?;
         let entries = queue.load();
-        let open: Vec<&PostedComment> = entries.iter().flat_map(queue::Entry::open).collect();
+        let open: Vec<(Option<&ReviewedCommit>, &PostedComment)> =
+            entries.iter().flat_map(|e| e.open().map(|c| (e.review.commit.as_ref(), c))).collect();
         if open.is_empty() {
             return Ok(format!(
                 "There are no open review comments for {}. The user has not posted any, or they are all resolved.",
@@ -135,29 +137,61 @@ impl Server {
     }
 }
 
-/// The open comments as a Markdown prompt, grouped by file.
-fn render(root: &Path, comments: &[&PostedComment]) -> String {
-    let mut by_path: BTreeMap<&str, Vec<&PostedComment>> = BTreeMap::new();
-    for comment in comments {
-        by_path.entry(&comment.path).or_default().push(comment);
+/// Comments on one file, by path.
+type ByPath<'a> = BTreeMap<&'a str, Vec<&'a PostedComment>>;
+
+/// The open comments as a Markdown prompt, grouped by file: those on the
+/// uncommitted changes first, then those on each commit.
+fn render(root: &Path, comments: &[(Option<&ReviewedCommit>, &PostedComment)]) -> String {
+    let mut groups: Vec<(Option<&ReviewedCommit>, ByPath<'_>)> = Vec::new();
+    for &(commit, comment) in comments {
+        let id = commit.map(|c| &c.id);
+        let index = groups.iter().position(|(c, _)| c.map(|c| &c.id) == id).unwrap_or_else(|| {
+            groups.push((commit, BTreeMap::new()));
+            groups.len() - 1
+        });
+        groups[index].1.entry(&comment.path).or_default().push(comment);
     }
-    let mut text = format!(
-        "The user reviewed the uncommitted changes in {} and left these comments. Paths are relative to the \
-         repository root, and line numbers refer to the files when the comment was written. Address each \
-         comment, then call resolve_comments with the ids of the comments you addressed.\n\n",
-        root.display()
-    );
-    for (path, comments) in by_path {
-        let _ = writeln!(text, "## `{path}`\n");
-        for comment in comments {
-            feedback::write_comment(
-                &mut text,
-                comment.anchor.as_ref(),
-                &comment.body,
-                &format!(" (id {})", comment.id),
-            );
+    groups.sort_by_key(|(commit, _)| commit.is_some());
+
+    let only_uncommitted = groups.iter().all(|(commit, _)| commit.is_none());
+    let mut text = if only_uncommitted {
+        format!(
+            "The user reviewed the uncommitted changes in {} and left these comments. Paths are relative to the \
+             repository root, and line numbers refer to the files when the comment was written. Address each \
+             comment, then call resolve_comments with the ids of the comments you addressed.\n\n",
+            root.display()
+        )
+    } else {
+        format!(
+            "The user reviewed changes in {} and left these comments. Paths are relative to the repository \
+             root. Line numbers refer to the files when the comment was written, or for a commit, to the files \
+             as that commit left them. Address each comment, then call resolve_comments with the ids of the \
+             comments you addressed.\n\n",
+            root.display()
+        )
+    };
+    let file_heading = if only_uncommitted { "##" } else { "###" };
+    for (commit, by_path) in groups {
+        match commit {
+            _ if only_uncommitted => {}
+            None => text.push_str("## Uncommitted changes\n\n"),
+            Some(commit) => {
+                let _ = writeln!(text, "## Commit {} ({})\n", commit.id, commit.subject);
+            }
         }
-        text.push('\n');
+        for (path, comments) in by_path {
+            let _ = writeln!(text, "{file_heading} `{path}`\n");
+            for comment in comments {
+                feedback::write_comment(
+                    &mut text,
+                    comment.anchor.as_ref(),
+                    &comment.body,
+                    &format!(" (id {})", comment.id),
+                );
+            }
+            text.push('\n');
+        }
     }
     text.trim_end().to_owned() + "\n"
 }
@@ -188,8 +222,8 @@ fn tools() -> Value {
         {
             "name": "get_review",
             "title": "Get review comments",
-            "description": "Get the open comments the user posted in Agent Review on the uncommitted changes \
-                of this repository, with the lines each one is about. Address each comment, then call \
+            "description": "Get the open comments the user posted in Agent Review on the changes of this \
+                repository, uncommitted ones or commits, with the lines each one is about. Address each comment, then call \
                 resolve_comments with the ids of the comments you addressed.",
             "inputSchema": { "type": "object", "properties": { "project": project } },
             "annotations": { "readOnlyHint": false, "idempotentHint": true },
@@ -278,6 +312,7 @@ mod tests {
         let queue = Queue::at(dir.path().to_path_buf());
         queue
             .post(
+                None,
                 [
                     (5, "src/main.rs".to_owned(), Some(anchor), "Use a descriptive name.".to_owned()),
                     (6, "README.md".to_owned(), None, "Document the flag.".to_owned()),
@@ -299,5 +334,23 @@ mod tests {
 
         let (text, error) = call(&server, "resolve_comments", &json!({}));
         assert!(error && text.contains("`ids`"));
+    }
+
+    #[test]
+    fn groups_comments_on_commits_after_the_uncommitted_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server(dir.path());
+        let queue = Queue::at(dir.path().to_path_buf());
+        let commit = ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add the parser".into() };
+        queue.post(Some(commit), [(1, "src/parse.rs".to_owned(), None, "Handle errors.".to_owned())], 1).unwrap();
+        queue.post(None, [(2, "README.md".to_owned(), None, "Document it.".to_owned())], 2).unwrap();
+
+        let (text, _) = call(&server, "get_review", &json!({}));
+        let uncommitted = text.find("## Uncommitted changes\n\n### `README.md`\n\n- **File** (id 2)").unwrap();
+        let commit = text
+            .find("## Commit 0123456789abcdef (Add the parser)\n\n### `src/parse.rs`\n\n- **File** (id 1)")
+            .unwrap();
+        assert!(uncommitted < commit, "{text}");
+        assert!(text.starts_with("The user reviewed changes in /repo"));
     }
 }

@@ -1,5 +1,6 @@
 //! The GTK user interface.
 
+mod commit_picker;
 mod diff_view;
 mod file_list;
 mod highlight;

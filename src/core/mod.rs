@@ -5,6 +5,7 @@ pub mod align;
 pub mod diff;
 pub mod feedback;
 pub mod git;
+pub mod graph;
 pub mod hash;
 pub mod mcp;
 pub mod queue;

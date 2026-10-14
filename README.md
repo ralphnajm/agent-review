@@ -42,6 +42,9 @@ about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
   header sticks to the top while you scroll through it, and clicking a file in the file panel
   jumps straight to it. Show all uncommitted changes, or only staged or only unstaged ones.
   Untracked files count as new, and everything updates live as the agent edits files.
+- **Commits:** the button above the file panel opens the history of the repository as a graph.
+  Pick a commit to review what it changed, with its own comments and reviewed files; the top
+  row takes you back to the uncommitted changes.
 - **Diffs:** syntax highlighted, with old and new line numbers, find across files, and a
   filter for the file list. Show changes one above the other, or old and new side by side
   (**Side by Side** in the main menu).
@@ -76,6 +79,7 @@ Review state lives in `~/.local/share/agent-review/`, never inside your reposito
 | Ctrl+P | Switch project |
 | Ctrl+F | Find in files |
 | Ctrl+Shift+F | Filter the file list |
+| Ctrl+H | Review a commit |
 | Ctrl+M | Comment on the selected lines |
 | Alt+↑ / Alt+↓ | Previous / next file |
 | Ctrl+Shift+A | Mark the file as reviewed |
@@ -106,8 +110,8 @@ sudo apt install ./agent-review_*.deb    # Ubuntu / Debian
 sudo dnf install ./agent-review-*.rpm    # Fedora
 ```
 
-Once installed, **Self-Update** in the main menu updates Agent Review to the latest release, however you
-installed it, and restarts it.
+Once installed, **Check for Updates** in the main menu tells you whether a newer release is out and, if you
+want it, updates Agent Review to it however you installed it, and restarts it.
 
 ### From source
 
@@ -193,7 +197,8 @@ CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04 and builds the
 ```
 src/
   core/         UI-independent logic, unit tested
-    git.rs        repository access through the git CLI (status, diffs, watched dirs)
+    git.rs        repository access through the git CLI (status, diffs, history, watched dirs)
+    graph.rs      lanes for drawing the commit history as a graph
     status.rs     `git status --porcelain=v2` parser
     diff.rs       unified diff parser, fingerprints, line snippets
     split.rs      side-by-side pairing and wrapping of diff lines
@@ -203,11 +208,12 @@ src/
     mcp.rs        MCP server (`agent-review --mcp`) agents pull reviews from
     watcher.rs    inotify watchers for the repository and the review queue
     store.rs      settings and review persistence (XDG directories)
-    update.rs     self-update by running scripts/update.sh from the main branch
+    update.rs     update checks, and updating by running scripts/update.sh from the main branch
   ui/           GTK widgets
     window.rs     main window, actions and state
     diff_view.rs  GtkSourceView diff with inline comment threads
     reviews_dialog.rs  posted reviews and their status
+    commit_picker.rs   the commit history, to pick a commit to review
     file_list.rs, project_switcher.rs
 data/           desktop entry, AppStream metadata, icons
 ```

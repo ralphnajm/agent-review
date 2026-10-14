@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::review::LineAnchor;
+use crate::core::review::{LineAnchor, ReviewedCommit};
 use crate::core::store;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +32,9 @@ pub struct PostedComment {
 pub struct PostedReview {
     pub id: u64,
     pub posted_at: i64,
+    /// The commit reviewed; `None` for the uncommitted changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<ReviewedCommit>,
     pub comments: Vec<PostedComment>,
 }
 
@@ -116,9 +119,11 @@ impl Queue {
         entries
     }
 
-    /// Posts `comments`, given as (note id, path, anchor, body), as a new review.
+    /// Posts `comments` on `commit`, or on the uncommitted changes, given as
+    /// (note id, path, anchor, body), as a new review.
     pub fn post(
         &self,
+        commit: Option<ReviewedCommit>,
         comments: impl IntoIterator<Item = (u64, String, Option<LineAnchor>, String)>,
         now: i64,
     ) -> std::io::Result<PostedReview> {
@@ -129,7 +134,7 @@ impl Queue {
             .zip(comments)
             .map(|(id, (note_id, path, anchor, body))| PostedComment { id, note_id, path, anchor, body })
             .collect();
-        let review = PostedReview { id, posted_at: now, comments };
+        let review = PostedReview { id, posted_at: now, commit, comments };
         store::write_json(&self.review_file(id), &review)?;
         Ok(review)
     }
@@ -200,8 +205,8 @@ mod tests {
         let queue = Queue::at(dir.path().join("queue"));
         assert_eq!(queue.load(), []);
 
-        let first = queue.post([comment(7, "Rename"), comment(8, "Test")], 10).unwrap();
-        let second = queue.post([comment(9, "Split")], 11).unwrap();
+        let first = queue.post(None, [comment(7, "Rename"), comment(8, "Test")], 10).unwrap();
+        let second = queue.post(None, [comment(9, "Split")], 11).unwrap();
         assert_eq!((first.id, second.id), (1, 2));
         let ids: Vec<u64> = first.comments.iter().chain(&second.comments).map(|c| c.id).collect();
         assert_eq!(ids, [1, 2, 3]);
@@ -226,8 +231,8 @@ mod tests {
     fn only_reviews_not_pulled_can_be_withdrawn() {
         let dir = tempfile::tempdir().unwrap();
         let queue = Queue::at(dir.path().to_path_buf());
-        let first = queue.post([comment(1, "One")], 1).unwrap();
-        let second = queue.post([comment(2, "Two")], 2).unwrap();
+        let first = queue.post(None, [comment(1, "One")], 1).unwrap();
+        let second = queue.post(None, [comment(2, "Two")], 2).unwrap();
         queue.mark_pulled(&[second.id], 3).unwrap();
         assert!(queue.withdraw(first.id).unwrap());
         assert!(!queue.withdraw(second.id).unwrap());

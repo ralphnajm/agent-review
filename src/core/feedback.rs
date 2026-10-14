@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use crate::core::diff::FileDiff;
-use crate::core::review::{ApprovalState, LineAnchor, Note, ReviewState};
+use crate::core::review::{ApprovalState, LineAnchor, Note, ReviewState, ReviewedCommit};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -13,6 +13,8 @@ pub struct Options {
     pub include_sent: bool,
     /// List the files that were approved.
     pub list_approved: bool,
+    /// The commit reviewed; `None` for the uncommitted changes.
+    pub commit: Option<ReviewedCommit>,
 }
 
 /// A file currently under review.
@@ -83,11 +85,15 @@ pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) ->
         return feedback;
     }
 
-    let mut text = String::new();
+    let reviewed = options.commit.as_ref().map_or_else(
+        || "the current uncommitted changes".to_owned(),
+        |c| format!("commit {} ({})", c.short_id(), c.subject),
+    );
+    let mut text = format!("I reviewed {reviewed}. ");
     if feedback.note_ids.is_empty() {
-        text.push_str("I reviewed the current uncommitted changes. No changes requested.\n\n");
+        text.push_str("No changes requested.\n\n");
     } else {
-        text.push_str("I reviewed the current uncommitted changes. Please address the following notes.\n\n");
+        text.push_str("Please address the following notes.\n\n");
     }
     if !summary.is_empty() {
         let _ = writeln!(text, "{summary}\n");
@@ -242,6 +248,16 @@ These files look good, no changes needed:
         let files = [FileInfo { path: "src/main.rs", diff: Some(&diff), approval: ApprovalState::Unreviewed }];
         let text = build(&review, &files, &Options::default()).text;
         assert!(text.contains("**Line 2** (changed since): `let y = 2;`"));
+    }
+
+    #[test]
+    fn names_the_commit_reviewed() {
+        let mut review = ReviewState::default();
+        review.add_note("a.rs", None, "Fix", None, 1);
+        let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
+        let commit = ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add a.rs".into() };
+        let text = build(&review, &files, &Options { commit: Some(commit), ..Options::default() }).text;
+        assert!(text.starts_with("I reviewed commit 0123456 (Add a.rs). Please address the following notes."));
     }
 
     #[test]

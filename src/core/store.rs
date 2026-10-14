@@ -85,18 +85,22 @@ impl Settings {
     }
 }
 
-/// Review state for the project at `path`.
-pub fn load_review(path: &Path) -> ReviewState {
-    read_json(&review_file(path)).unwrap_or_default()
+/// Review state for the project at `path`: of its uncommitted changes, or of `commit`.
+pub fn load_review(path: &Path, commit: Option<&str>) -> ReviewState {
+    read_json(&review_file(path, commit)).unwrap_or_default()
 }
 
-pub fn save_review(path: &Path, review: &ReviewState) -> std::io::Result<()> {
-    write_json(&review_file(path), review)
+pub fn save_review(path: &Path, commit: Option<&str>, review: &ReviewState) -> std::io::Result<()> {
+    write_json(&review_file(path, commit), review)
 }
 
-fn review_file(path: &Path) -> PathBuf {
+fn review_file(path: &Path, commit: Option<&str>) -> PathBuf {
     let key = hash::hex(path.as_os_str().as_encoded_bytes());
-    data_dir().join("reviews").join(format!("{key}.json"))
+    let reviews = data_dir().join("reviews");
+    match commit {
+        None => reviews.join(format!("{key}.json")),
+        Some(id) => reviews.join("commits").join(key).join(format!("{id}.json")),
+    }
 }
 
 /// Where the reviews posted for the repository at `root` are queued.

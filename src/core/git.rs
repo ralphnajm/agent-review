@@ -11,10 +11,50 @@ use anyhow::{Context, Result, bail};
 
 use crate::core::diff::{self, FileDiff};
 use crate::core::review::Author;
-use crate::core::status::{self, DiffMode, RepoStatus};
+use crate::core::status::{self, DiffMode, RepoStatus, StatusEntry};
 
 /// The well-known id of git's empty tree, used as the base before the first commit.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+const DIFF_ARGS: [&str; 7] =
+    ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/"];
+
+/// The fields `git log` prints for each commit, in the order [`parse_log`] reads them.
+const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s%x1f%b";
+
+/// One commit of the history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub id: String,
+    /// The parents in the history shown: when the review is limited to a
+    /// folder, the nearest ancestors that change it.
+    pub parents: Vec<String>,
+    pub author: String,
+    /// Unix seconds.
+    pub time: i64,
+    /// Branches and tags pointing at the commit.
+    pub refs: Vec<String>,
+    /// Whether `HEAD` points at the commit.
+    pub is_head: bool,
+    pub subject: String,
+    /// The rest of the message.
+    pub body: String,
+}
+
+impl Commit {
+    pub fn short_id(&self) -> &str {
+        self.id.get(..7).unwrap_or(&self.id)
+    }
+}
+
+/// The latest commits, children before their parents.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct History {
+    /// The commit the uncommitted changes are based on: `HEAD`, or its latest
+    /// ancestor that changes the reviewed folder. `None` before the first commit.
+    pub head: Option<String>,
+    pub commits: Vec<Commit>,
+}
 
 /// A repository, optionally narrowed to a sub-directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,23 +167,13 @@ impl Repo {
     }
 
     fn diff(&self, mode: DiffMode, status: &RepoStatus) -> Result<HashMap<String, FileDiff>> {
-        let mut args = vec![
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--find-renames",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-        ];
+        let mut args = DIFF_ARGS.to_vec();
         match mode {
             DiffMode::All => args.push(if status.has_head { "HEAD" } else { EMPTY_TREE }),
             DiffMode::Staged => args.push("--cached"),
             DiffMode::Unstaged => {}
         }
-        let output = self.run(&args)?;
-        let mut diffs: HashMap<String, FileDiff> =
-            diff::parse(&String::from_utf8_lossy(&output)).into_iter().map(|d| (d.path().to_owned(), d)).collect();
+        let mut diffs = parse_diffs(&self.run(&args)?);
 
         if mode != DiffMode::Staged {
             for entry in status.entries.iter().filter(|e| e.is_untracked()) {
@@ -153,23 +183,66 @@ impl Repo {
         Ok(diffs)
     }
 
+    /// The latest `limit` commits of `HEAD` and the local branches, newest
+    /// first but children always before their parents. Limited to the commits
+    /// that change the reviewed folder, if any.
+    pub fn history(&self, limit: usize) -> Result<History> {
+        let output = self.command().args(["rev-list", "--max-count=1", "HEAD"]).args(self.pathspec()).output();
+        let Some(head) = output.ok().filter(|o| o.status.success()) else {
+            // No commits yet.
+            return Ok(History::default());
+        };
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+        let limit = format!("--max-count={limit}");
+        // `--parents` links each commit to the parents shown when limited to a folder.
+        let output = self.run(&["log", "HEAD", "--branches", "--date-order", "--parents", "-z", &limit, LOG_FORMAT])?;
+        Ok(History { head: (!head.is_empty()).then_some(head), commits: parse_log(&output) })
+    }
+
+    /// The changes commit `id` made to its first parent, as a snapshot whose
+    /// entries are all staged.
+    pub fn commit_snapshot(&self, id: &str) -> Result<Snapshot> {
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("{id} is not a commit id");
+        }
+        let output = self.command().args(["rev-parse", "--verify", "--quiet", &format!("{id}^")]).output()?;
+        let parent = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let base = if output.status.success() && !parent.is_empty() { parent.as_str() } else { EMPTY_TREE };
+        let mut args = DIFF_ARGS.to_vec();
+        args.extend([base, id]);
+        let all = parse_diffs(&self.run(&args)?);
+        let mut entries: Vec<StatusEntry> = all.values().map(StatusEntry::committed).collect();
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(Snapshot { status: RepoStatus { branch: None, has_head: true, entries }, all, view: None })
+    }
+
+    /// The text of `path` as commit `id` left it. `None` for files too large
+    /// to show, or that the commit deleted.
+    pub fn commit_text(&self, id: &str, path: &str) -> Result<Option<String>> {
+        self.blob_text(&format!("{id}:{path}"))
+    }
+
+    fn blob_text(&self, object: &str) -> Result<Option<String>> {
+        let output = self.command().args(["cat-file", "blob", object]).output().context("Could not run git")?;
+        if !output.status.success()
+            || u64::try_from(output.stdout.len()).unwrap_or(u64::MAX) > diff::MAX_UNTRACKED_BYTES
+        {
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
+
     /// The text of the new side of `path` in `mode`'s diff: the staged version
     /// for staged changes, else the working tree's. `None` for files too large
     /// to show, or that are gone.
     pub fn new_side_text(&self, path: &str, mode: DiffMode) -> Result<Option<String>> {
-        let bytes = if mode == DiffMode::Staged {
-            let output =
-                self.command().args(["cat-file", "blob", &format!(":{path}")]).output().context("Could not run git")?;
-            if !output.status.success() {
-                return Ok(None);
-            }
-            output.stdout
-        } else {
-            let full = self.root.join(path);
-            match std::fs::metadata(&full) {
-                Ok(meta) if meta.is_file() => std::fs::read(&full)?,
-                _ => return Ok(None),
-            }
+        if mode == DiffMode::Staged {
+            return self.blob_text(&format!(":{path}"));
+        }
+        let full = self.root.join(path);
+        let bytes = match std::fs::metadata(&full) {
+            Ok(meta) if meta.is_file() => std::fs::read(&full)?,
+            _ => return Ok(None),
         };
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > diff::MAX_UNTRACKED_BYTES {
             return Ok(None);
@@ -216,6 +289,53 @@ impl Repo {
             .status()
             .is_ok_and(|s| s.success())
     }
+}
+
+fn parse_diffs(output: &[u8]) -> HashMap<String, FileDiff> {
+    diff::parse(&String::from_utf8_lossy(output)).into_iter().map(|d| (d.path().to_owned(), d)).collect()
+}
+
+/// Parses `git log -z` output in [`LOG_FORMAT`].
+fn parse_log(output: &[u8]) -> Vec<Commit> {
+    output
+        .split(|b| *b == 0)
+        .filter_map(|record| {
+            let record = String::from_utf8_lossy(record);
+            let mut fields = record.trim_start_matches('\n').splitn(7, '\x1f');
+            let id = fields.next().filter(|id| !id.is_empty())?.to_owned();
+            let parents = fields.next()?.split_whitespace().map(str::to_owned).collect();
+            let author = fields.next()?.to_owned();
+            let time = fields.next()?.parse().unwrap_or(0);
+            let (refs, is_head) = parse_refs(fields.next()?);
+            let subject = fields.next()?.to_owned();
+            let body = fields.next().unwrap_or_default().trim().to_owned();
+            Some(Commit { id, parents, author, time, refs, is_head, subject, body })
+        })
+        .collect()
+}
+
+/// Reads `%D` (`HEAD -> main, origin/main, tag: v1.0`) into the names of the
+/// branches and tags, and whether `HEAD` is among them.
+fn parse_refs(decoration: &str) -> (Vec<String>, bool) {
+    let mut is_head = false;
+    let mut refs = Vec::new();
+    for name in decoration.split(", ").map(str::trim).filter(|n| !n.is_empty()) {
+        let name = match name.strip_prefix("HEAD -> ") {
+            Some(branch) => {
+                is_head = true;
+                branch
+            }
+            None if name == "HEAD" => {
+                is_head = true;
+                continue;
+            }
+            None => name.strip_prefix("tag: ").unwrap_or(name),
+        };
+        if !name.ends_with("/HEAD") {
+            refs.push(name.to_owned());
+        }
+    }
+    (refs, is_head)
 }
 
 #[cfg(test)]
@@ -276,6 +396,65 @@ mod tests {
 
         let dirs = repo.watched_dirs().unwrap();
         assert!(dirs.contains(&repo.root.join("sub")));
+    }
+
+    #[test]
+    fn reads_the_history_and_what_a_commit_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        let repo = Repo::discover(root).unwrap();
+        assert_eq!(repo.history(10).unwrap(), History::default());
+
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/a.txt"), "one\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "First"]);
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "Second", "-m", "With a body."]);
+        std::fs::write(root.join("sub/a.txt"), "one\ntwo\n").unwrap();
+        git(root, &["commit", "-q", "-am", "Third"]);
+        git(root, &["tag", "v1"]);
+
+        let history = repo.history(10).unwrap();
+        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["Third", "Second", "First"]);
+        let [third, second, first] = &history.commits[..] else { unreachable!() };
+        assert_eq!(history.head.as_deref(), Some(third.id.as_str()));
+        assert!(third.is_head && !second.is_head);
+        assert_eq!(third.refs, ["main", "v1"]);
+        assert_eq!(third.parents, std::slice::from_ref(&second.id));
+        assert_eq!((second.author.as_str(), second.body.as_str()), ("Test", "With a body."));
+        assert_eq!(first.parents, Vec::<String>::new());
+        assert_eq!(repo.history(1).unwrap().commits.len(), 1);
+
+        let snapshot = repo.commit_snapshot(&third.id).unwrap();
+        assert_eq!(snapshot.all["sub/a.txt"].additions, 1);
+        assert_eq!(snapshot.status.entries[0].kind_in(DiffMode::All), status::ChangeKind::Modified);
+        let initial = repo.commit_snapshot(&first.id).unwrap();
+        assert_eq!(initial.status.entries[0].kind_in(DiffMode::All), status::ChangeKind::Added);
+        assert_eq!(repo.commit_text(&first.id, "sub/a.txt").unwrap().as_deref(), Some("one\n"));
+        assert_eq!(repo.commit_text(&first.id, "b.txt").unwrap(), None);
+        assert!(repo.commit_snapshot("HEAD~1").is_err());
+
+        // Limited to a folder: the commits that change it, linked to each other.
+        let scoped = Repo::discover(&root.join("sub")).unwrap();
+        let history = scoped.history(10).unwrap();
+        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["Third", "First"]);
+        assert_eq!(history.commits[0].parents, std::slice::from_ref(&first.id));
+        assert_eq!(scoped.commit_snapshot(&second.id).unwrap().status.entries, []);
+    }
+
+    #[test]
+    fn reads_branch_and_tag_names() {
+        assert_eq!(
+            parse_refs("HEAD -> main, origin/main, origin/HEAD, tag: v1"),
+            (vec!["main".into(), "origin/main".into(), "v1".into()], true)
+        );
+        assert_eq!(parse_refs("HEAD"), (vec![], true));
+        assert_eq!(parse_refs(""), (vec![], false));
     }
 
     #[test]

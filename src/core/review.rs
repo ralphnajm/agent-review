@@ -67,6 +67,19 @@ impl LineAnchor {
     }
 }
 
+/// The commit a review is about, when it is not about the uncommitted changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewedCommit {
+    pub id: String,
+    pub subject: String,
+}
+
+impl ReviewedCommit {
+    pub fn short_id(&self) -> &str {
+        self.id.get(..7).unwrap_or(&self.id)
+    }
+}
+
 /// Who wrote a comment: the repository's git identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Author {

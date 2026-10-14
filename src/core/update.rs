@@ -1,7 +1,7 @@
-//! Self-update: downloads `scripts/update.sh` from the repository's main
-//! branch and runs it. The script finds out how the running binary was
-//! installed, updates it the same way, and starts the new version once this
-//! one has quit.
+//! Updates: [`check`] asks GitHub for the latest release, and [`run`]
+//! downloads `scripts/update.sh` from the repository's main branch and runs
+//! it. The script finds out how the running binary was installed, updates it
+//! the same way, and starts the new version once this one has quit.
 
 use std::process::{Command, Output, Stdio};
 
@@ -17,6 +17,35 @@ pub enum Outcome {
     /// Updated: the app must quit so the new version can start.
     Updated,
     UpToDate,
+}
+
+/// The latest release's version when it is newer than this one, else `None`.
+pub fn check() -> Result<Option<String>> {
+    let repo = config::REPOSITORY.trim_start_matches("https://github.com/");
+    let output = Command::new("curl")
+        .args(["-fsSL", "-H", "Accept: application/vnd.github+json"])
+        .arg(format!("https://api.github.com/repos/{repo}/releases/latest"))
+        .stdin(Stdio::null())
+        .output()
+        .context("Could not run curl. Is it installed?")?;
+    if !output.status.success() {
+        bail!("Could not reach GitHub: {}", last_line(&output.stderr).unwrap_or("curl failed"));
+    }
+    let latest = latest_version(&output.stdout).context("Could not find the latest release")?;
+    Ok(is_newer(&latest, config::VERSION).then_some(latest))
+}
+
+/// The version of the release GitHub's API describes in `json`.
+fn latest_version(json: &[u8]) -> Option<String> {
+    let release: serde_json::Value = serde_json::from_slice(json).ok()?;
+    let tag = release.get("tag_name")?.as_str()?;
+    Some(tag.strip_prefix('v').unwrap_or(tag).to_owned())
+}
+
+/// Whether version `a` comes after `b`, comparing their numbers in turn.
+fn is_newer(a: &str, b: &str) -> bool {
+    let numbers = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    numbers(a) > numbers(b)
 }
 
 /// Where the update script is downloaded from.
@@ -75,6 +104,16 @@ mod tests {
     #[test]
     fn script_comes_from_the_main_branch() {
         assert_eq!(script_url(), "https://raw.githubusercontent.com/ralphnajm/agent-review/main/scripts/update.sh");
+    }
+
+    #[test]
+    fn compares_release_versions() {
+        assert_eq!(latest_version(br#"{"tag_name": "v0.10.0", "name": "0.10.0"}"#).as_deref(), Some("0.10.0"));
+        assert_eq!(latest_version(b"{}"), None);
+        assert!(is_newer("0.10.0", "0.9.0"));
+        assert!(is_newer("1.0.0", "0.99.1"));
+        assert!(!is_newer("0.9.0", "0.9.0"));
+        assert!(!is_newer("0.8.2", "0.9.0"));
     }
 
     #[test]

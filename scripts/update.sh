@@ -1,8 +1,8 @@
 #!/bin/sh
 # Updates a running Agent Review to the latest release, the way it was
 # installed, then starts the new version once the running one has quit. The
-# app downloads this script from the main branch and runs it when you click
-# Self-Update:
+# app downloads this script from the main branch and runs it when you accept
+# the update Check for Updates offers:
 #
 #   update.sh VERSION EXE PID
 #

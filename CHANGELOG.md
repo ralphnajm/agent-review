@@ -5,6 +5,21 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [0.10.0] - 2026-10-14
+
+### Added
+
+- Review commits, not just uncommitted changes: the button above the file panel opens the repository's history as
+  a graph of its branches and merges. Pick a commit to see what it changed, with its message beside the file list,
+  then comment and tick files off as usual. Each commit keeps its own comments and reviewed files, and posted or
+  copied feedback tells your agent which commit it is about. The top row of the history, or Alt+1, 2 or 3, takes
+  you back to the uncommitted changes. Ctrl+H opens the history.
+
+### Changed
+
+- **Self-Update** is now **Check for Updates**. It opens a dialog that checks for a newer release and tells you
+  when you already have the latest one. When there is a newer one, it asks before updating.
+
 ## [0.9.0] - 2026-10-14
 
 ### Added
