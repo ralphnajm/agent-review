@@ -68,8 +68,10 @@ uninstall:
 	rm -f $(DATADIR)/icons/hicolor/symbolic/apps/$(APP_ID)-symbolic.svg
 
 # Requires `cargo install cargo-generate-rpm`.
+# RPM versions can't contain '-': a pre-release (1.0.0-alpha.1) becomes 1.0.0~alpha.1,
+# which RPM sorts before 1.0.0.
 rpm: release
-	$(CARGO) generate-rpm
+	$(CARGO) generate-rpm --set-metadata 'version = "$(shell scripts/version.sh | tr - '~')"'
 
 # Requires `cargo install cargo-deb`.
 deb: release

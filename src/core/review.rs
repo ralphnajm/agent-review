@@ -72,6 +72,10 @@ impl LineAnchor {
 pub struct ReviewedCommit {
     pub id: String,
     pub subject: String,
+    /// For a version the agent asked to have reviewed, the commit its changes
+    /// are compared to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 impl ReviewedCommit {
@@ -93,6 +97,9 @@ pub struct Note {
     pub id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<LineAnchor>,
+    /// For a comment on the running product, the address of the page it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
     pub body: String,
     /// Who wrote it; missing when git had no `user.name`, or for comments
     /// written before authors were recorded.
@@ -131,6 +138,9 @@ pub enum ApprovalState {
 pub struct ReviewState {
     #[serde(default)]
     pub files: BTreeMap<String, FileReview>,
+    /// Comments on the running product of a version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub product: Vec<Note>,
     #[serde(default)]
     next_id: u64,
 }
@@ -169,9 +179,47 @@ impl ReviewState {
         self.next_id += 1;
         let id = self.next_id;
         let author = author.cloned();
-        let note = Note { id, anchor, body: body.trim().to_owned(), author, created_at: now, sent_at: None };
+        let note =
+            Note { id, anchor, page: None, body: body.trim().to_owned(), author, created_at: now, sent_at: None };
         self.files.entry(path.to_owned()).or_default().notes.push(note);
         id
+    }
+
+    /// Comments on the running product on the page at `page`.
+    pub fn add_product_note(&mut self, page: &str, body: &str, author: Option<&Author>, now: i64) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        let page = Some(page.to_owned());
+        let author = author.cloned();
+        self.product.push(Note {
+            id,
+            anchor: None,
+            page,
+            body: body.trim().to_owned(),
+            author,
+            created_at: now,
+            sent_at: None,
+        });
+        id
+    }
+
+    pub fn remove_product_note(&mut self, id: u64) {
+        self.product.retain(|n| n.id != id);
+    }
+
+    /// Puts back a note removed with [`Self::remove_product_note`].
+    pub fn restore_product_note(&mut self, note: Note) {
+        let position = self.product.iter().position(|n| n.id > note.id).unwrap_or(self.product.len());
+        self.product.insert(position, note);
+    }
+
+    pub fn unsent_product_notes(&self) -> usize {
+        self.product.iter().filter(|n| n.sent_at.is_none()).count()
+    }
+
+    /// Every unsent comment, on files and on the product.
+    pub fn unsent(&self) -> usize {
+        self.files.keys().map(|p| self.unsent_notes(p)).sum::<usize>() + self.unsent_product_notes()
     }
 
     pub fn remove_note(&mut self, path: &str, id: u64) {
@@ -190,7 +238,7 @@ impl ReviewState {
 
     /// Marks notes as sent (`Some(time)`) or unsent again (`None`).
     pub fn set_sent(&mut self, ids: &[u64], sent_at: Option<i64>) {
-        for note in self.files.values_mut().flat_map(|f| &mut f.notes) {
+        for note in self.files.values_mut().flat_map(|f| &mut f.notes).chain(&mut self.product) {
             if ids.contains(&note.id) {
                 note.sent_at = sent_at;
             }
@@ -199,6 +247,7 @@ impl ReviewState {
 
     pub fn clear(&mut self) {
         self.files.clear();
+        self.product.clear();
     }
 
     fn prune(&mut self, path: &str) {
@@ -261,5 +310,27 @@ mod tests {
         review.remove_note("a.rs", first);
         review.remove_note("a.rs", second);
         assert!(review.files.is_empty());
+    }
+
+    #[test]
+    fn product_notes_count_with_the_file_notes() {
+        let mut review = ReviewState::default();
+        let file = review.add_note("a.rs", None, "Fix", None, 1);
+        let page = review.add_product_note("http://localhost:5173/pricing", " Bigger button ", None, 2);
+        assert_ne!(file, page);
+        assert_eq!(review.product[0].page.as_deref(), Some("http://localhost:5173/pricing"));
+        assert_eq!(review.product[0].body, "Bigger button");
+        assert_eq!(review.unsent(), 2);
+        review.set_sent(&[page], Some(3));
+        assert_eq!((review.unsent_product_notes(), review.unsent()), (0, 1));
+
+        let note = review.product[0].clone();
+        review.remove_product_note(page);
+        assert_eq!(review.product, []);
+        review.restore_product_note(note);
+        let json = serde_json::to_string(&review).unwrap();
+        assert_eq!(serde_json::from_str::<ReviewState>(&json).unwrap(), review);
+        review.clear();
+        assert_eq!(review, ReviewState { next_id: review.next_id, ..ReviewState::default() });
     }
 }

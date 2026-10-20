@@ -3,8 +3,11 @@
 //! Layout: one top bar holding the project switcher on the left and the
 //! review state and actions on the right; a resizable file panel; and the
 //! review panel, with every file's diff and comments inline, filling the rest.
-//! The file panel reviews the uncommitted changes, or a commit picked from
-//! the history at its top.
+//! For a version with a running product, a switch in the middle of the top bar
+//! brings the product view to the front instead.
+//! The file panel reviews the uncommitted changes, a commit picked from the
+//! history at its top, or a version the agent asked to have reviewed, which a
+//! banner above the review panel announces.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -19,14 +22,15 @@ use crate::config;
 use crate::core::diff::FileDiff;
 use crate::core::feedback::{self, Feedback, FileInfo, Options};
 use crate::core::git::{Commit, Repo, Snapshot};
-use crate::core::queue::{self, Queue};
+use crate::core::queue::{self, PostedComment, Queue, ReviewRequest};
 use crate::core::review::{ApprovalState, Author, LineAnchor, ReviewState, ReviewedCommit};
 use crate::core::status::{DiffMode, RepoStatus, StatusEntry};
-use crate::core::store::{self, Settings};
+use crate::core::store::{self, ReviewOf, Settings};
 use crate::core::update;
 use crate::core::{self as app_core, watcher};
 use crate::ui::commit_picker::CommitPicker;
 use crate::ui::file_list::{FileItem, FileList};
+use crate::ui::product_view::ProductView;
 use crate::ui::project_switcher::ProjectSwitcher;
 use crate::ui::review_panel::{FileData, ReviewPanel};
 use crate::ui::reviews_dialog::ReviewsDialog;
@@ -52,13 +56,20 @@ struct Widgets {
     commit_info: gtk::Box,
     commit_meta: gtk::Label,
     commit_body: gtk::Label,
+    /// Opens the running product of a version under review.
+    product_link: gtk::LinkButton,
     tabs: gtk::Box,
     mode_counts: Vec<(DiffMode, gtk::Label)>,
     search: gtk::SearchEntry,
     files: FileList,
     sidebar_stack: gtk::Stack,
     content_stack: gtk::Stack,
+    /// Announces a version ready for review, or that the one under review is out of date.
+    banner: adw::Banner,
     review: ReviewPanel,
+    /// Switches between the product and the code of a version.
+    view_switch: gtk::Box,
+    product: ProductView,
     review_actions: gtk::Box,
     progress: gtk::Label,
     post_count: gtk::Label,
@@ -73,12 +84,18 @@ struct Project {
     author: Option<Author>,
     /// The commit being reviewed; `None` for the uncommitted changes.
     commit: Option<Commit>,
+    /// The version under review, whose commit is `commit`.
+    request: Option<ReviewRequest>,
+    /// The versions the agent asked to have reviewed, oldest first.
+    requests: Vec<ReviewRequest>,
+    /// The commit `HEAD` points at, as last read.
+    head: Option<String>,
     snapshot: Snapshot,
     /// Fingerprints of the diffs by path, for approvals: `HEAD` → worktree,
     /// or the commit's.
     fingerprints: HashMap<String, String>,
     loaded: bool,
-    /// The review of the uncommitted changes, or of the commit.
+    /// The review of the uncommitted changes, the commit or the version.
     review: ReviewState,
     /// Reviews posted for the agent to pull, and its progress on them.
     queue: Queue,
@@ -87,11 +104,11 @@ struct Project {
     _queue_watch: Option<watcher::WatchHandle>,
 }
 
-/// Which review state: a project's, of its uncommitted changes or of a commit.
+/// Which review state: a project's, of its uncommitted changes, a commit or a version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewKey {
     path: PathBuf,
-    commit: Option<String>,
+    of: ReviewOf,
 }
 
 impl Project {
@@ -99,12 +116,25 @@ impl Project {
         self.commit.as_ref().map(|c| c.id.as_str())
     }
 
+    fn review_of(&self) -> ReviewOf {
+        review_of(self.commit.as_ref(), self.request.as_ref())
+    }
+
     fn review_key(&self) -> ReviewKey {
-        ReviewKey { path: self.repo.path(), commit: self.commit_id().map(str::to_owned) }
+        ReviewKey { path: self.repo.path(), of: self.review_of() }
     }
 
     fn reviewed_commit(&self) -> Option<ReviewedCommit> {
-        self.commit.as_ref().map(|c| ReviewedCommit { id: c.id.clone(), subject: c.subject.clone() })
+        self.commit.as_ref().map(|c| ReviewedCommit {
+            id: c.id.clone(),
+            subject: c.subject.clone(),
+            base: self.request.as_ref().map(|r| r.base.clone()),
+        })
+    }
+
+    /// The latest version requested, when it is still what `HEAD` points at.
+    fn ready_request(&self) -> Option<&ReviewRequest> {
+        self.requests.last().filter(|r| self.head.as_deref() == Some(r.commit.as_str()))
     }
 
     fn fingerprint(&self, path: &str) -> &str {
@@ -120,7 +150,7 @@ impl Project {
     }
 
     fn save_review(&self) {
-        if let Err(err) = store::save_review(&self.repo.path(), self.commit_id(), &self.review) {
+        if let Err(err) = store::save_review(&self.repo.path(), &self.review_of(), &self.review) {
             eprintln!("agent-review: could not save review: {err}");
         }
     }
@@ -133,6 +163,8 @@ struct State {
     error: Option<String>,
     /// The file being read: picked in the file list, or the one at the top of the review panel.
     selected: Option<String>,
+    /// Whether the running product is in front of the code.
+    product: bool,
     /// Bumped whenever the project or the commit reviewed changes, to drop stale async results.
     generation: u64,
     refreshing: bool,
@@ -245,6 +277,16 @@ impl Window {
         self.add_action("show-history", |w| w.0.w.commits.popup());
         self.add_action("check-updates", Self::check_for_updates);
 
+        let view = gio::SimpleAction::new_stateful("view", Some(glib::VariantTy::STRING), &"code".to_variant());
+        let weak = self.weak();
+        view.connect_activate(move |_, parameter| {
+            let Some(id) = parameter.and_then(glib::Variant::str) else { return };
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).show_product(id == "product");
+            }
+        });
+        self.0.w.window.add_action(&view);
+
         let mode =
             gio::SimpleAction::new_stateful("diff-mode", Some(glib::VariantTy::STRING), &self.mode().id().to_variant());
         let weak = self.weak();
@@ -257,7 +299,7 @@ impl Window {
                 // Back to the uncommitted changes.
                 this.0.state.borrow_mut().settings.diff_mode = mode;
                 this.save_settings();
-                this.review_commit(None);
+                this.review_commit(None, None);
             } else if this.mode() != mode {
                 this.0.state.borrow_mut().settings.diff_mode = mode;
                 this.save_settings();
@@ -309,9 +351,9 @@ impl Window {
     }
 
     fn update_actions(&self) {
-        let (has_project, has_file) = {
+        let (has_project, has_file, product) = {
             let state = self.0.state.borrow();
-            (state.project.is_some(), state.project.is_some() && state.selected.is_some())
+            (state.project.is_some(), state.project.is_some() && state.selected.is_some(), state.product)
         };
         for name in [
             "refresh",
@@ -326,8 +368,11 @@ impl Window {
         ] {
             self.set_action_enabled(name, has_project);
         }
-        for name in ["reviewed", "comment", "comment-file", "find"] {
-            self.set_action_enabled(name, has_file);
+        for name in ["reviewed", "find"] {
+            self.set_action_enabled(name, has_file && !product);
+        }
+        for name in ["comment", "comment-file"] {
+            self.set_action_enabled(name, has_file || product);
         }
         self.0.w.review_actions.set_visible(has_project);
         self.0.w.commits.widget().set_sensitive(has_project);
@@ -348,7 +393,13 @@ impl Window {
         let weak = self.weak();
         w.commits.connect_pick(move |commit| {
             if let Some(inner) = weak.upgrade() {
-                Self(inner).review_commit(commit);
+                Self(inner).review_commit(commit, None);
+            }
+        });
+        let weak = self.weak();
+        w.banner.connect_button_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).review_ready_request();
             }
         });
         let weak = self.weak();
@@ -395,6 +446,18 @@ impl Window {
         w.review.connect_add(move |path, anchor, body| {
             if let Some(inner) = weak.upgrade() {
                 Self(inner).add_note(path, anchor, &body);
+            }
+        });
+        let weak = self.weak();
+        w.product.connect_add(move |page, body| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).add_product_note(&page, &body);
+            }
+        });
+        let weak = self.weak();
+        w.product.connect_delete(move |id| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).delete_product_note(id);
             }
         });
         let weak = self.weak();
@@ -511,7 +574,10 @@ impl Window {
             state.project = Some(Project {
                 author: author.clone(),
                 commit: None,
-                review: store::load_review(&path, None),
+                request: None,
+                requests: queue.requests(),
+                head: None,
+                review: store::load_review(&path, &ReviewOf::Changes),
                 posted: queue.load(),
                 queue,
                 _queue_watch: Some(queue_watch),
@@ -527,6 +593,7 @@ impl Window {
         self.0.w.commits.reset();
         self.0.w.review.clear();
         self.0.w.review.set_author(author.as_ref());
+        self.0.w.product.set_author(author.as_ref());
         self.render();
         self.refresh();
     }
@@ -559,7 +626,8 @@ impl Window {
         handle
     }
 
-    /// Reloads the posted reviews whenever the agent pulls or resolves them.
+    /// Reloads the posted reviews and review requests whenever the agent pulls
+    /// or resolves reviews, or requests one.
     fn start_watching_queue(&self, queue: &Queue) -> watcher::WatchHandle {
         let (sender, receiver) = async_channel::bounded::<()>(1);
         let handle = watcher::watch_dir(queue.dir().to_path_buf(), move || {
@@ -576,9 +644,20 @@ impl Window {
     }
 
     fn reload_posted(&self) {
-        if let Some(project) = self.0.state.borrow_mut().project.as_mut() {
+        let new_request = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
             project.posted = project.queue.load();
+            let known = project.requests.last().map_or(0, |r| r.id);
+            project.requests = project.queue.requests();
+            project.requests.last().filter(|r| r.id > known).cloned()
+        };
+        if let Some(request) = new_request {
+            self.notify_request(&request);
+            // Whether it is ready depends on where `HEAD` is now.
+            self.check_head();
         }
+        self.render_banner();
         self.render_toolbar();
         if self.0.w.reviews_dialog.is_open() {
             self.update_reviews_dialog();
@@ -588,7 +667,8 @@ impl Window {
     // ----- Refreshing ----------------------------------------------------
 
     pub fn refresh(&self) {
-        let (repo, mode, commit, generation) = {
+        self.check_head();
+        let (repo, mode, commit, base, generation) = {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = &state.project else { return };
             // A commit never changes once read.
@@ -596,21 +676,23 @@ impl Window {
                 return;
             }
             let (repo, commit) = (project.repo.clone(), project.commit_id().map(str::to_owned));
+            let base = project.request.as_ref().map(|r| r.base.clone());
             if state.refreshing {
                 state.refresh_queued = true;
                 return;
             }
             state.refreshing = true;
-            (repo, state.settings.diff_mode, commit, state.generation)
+            (repo, state.settings.diff_mode, commit, base, state.generation)
         };
 
         let weak = self.weak();
         glib::spawn_future_local(async move {
             let in_commit = commit.is_some();
             let result = gio::spawn_blocking(move || {
-                let snapshot = match &commit {
-                    Some(id) => repo.commit_snapshot(id),
-                    None => repo.snapshot(mode),
+                let snapshot = match (&commit, &base) {
+                    (Some(id), Some(base)) => repo.range_snapshot(base, id),
+                    (Some(id), None) => repo.commit_snapshot(id),
+                    (None, _) => repo.snapshot(mode),
                 };
                 snapshot.map(|snapshot| {
                     let fingerprints =
@@ -671,10 +753,33 @@ impl Window {
         self.render();
     }
 
+    /// Reads where `HEAD` is, which decides whether a requested version is
+    /// still current.
+    fn check_head(&self) {
+        let Some(repo) = self.0.state.borrow().project.as_ref().map(|p| p.repo.clone()) else { return };
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            let reader = repo.clone();
+            let head = gio::spawn_blocking(move || reader.head()).await.ok().flatten();
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Self(inner);
+            {
+                let mut state = this.0.state.borrow_mut();
+                let Some(project) = state.project.as_mut().filter(|p| p.repo == repo) else { return };
+                if project.head == head {
+                    return;
+                }
+                project.head = head;
+            }
+            this.render_banner();
+        });
+    }
+
     // ----- Rendering -----------------------------------------------------
 
     fn render(&self) {
         self.render_switcher();
+        self.render_banner();
         self.render_source();
         self.render_list();
         self.render_content();
@@ -699,10 +804,47 @@ impl Window {
         self.0.w.switcher.set_recent(&state.settings.recent, current.as_deref());
     }
 
+    /// Above the review panel: a version ready for review, or that the one
+    /// under review is out of date.
+    fn render_banner(&self) {
+        let banner = &self.0.w.banner;
+        let state = self.0.state.borrow();
+        let Some(project) = state.project.as_ref() else {
+            banner.set_revealed(false);
+            return;
+        };
+        let reviewing = project.request.as_ref();
+        if let Some(ready) = project.ready_request().filter(|r| reviewing.is_none_or(|v| v.id != r.id)) {
+            banner.set_title(&format!(
+                "Version {} is ready for review: {}",
+                ready.short_id(),
+                glib::markup_escape_text(&ready.subject)
+            ));
+            banner.set_button_label(Some("Review"));
+            banner.set_revealed(true);
+        } else if let Some(version) = reviewing.filter(|v| project.head.as_deref() != Some(v.commit.as_str())) {
+            banner
+                .set_title(&format!("Version {} is out of date: the repository has moved past it", version.short_id()));
+            banner.set_button_label(None);
+            banner.set_revealed(true);
+        } else {
+            banner.set_revealed(false);
+        }
+    }
+
     /// What is being reviewed, at the top of the file panel.
     fn render_source(&self) {
         let w = &self.0.w;
         let state = self.0.state.borrow();
+        let url = state.project.as_ref().and_then(|p| p.request.as_ref()).and_then(|r| r.url.as_deref());
+        w.product_link.set_visible(url.is_some());
+        if let Some(url) = url {
+            w.product_link.set_uri(url);
+            w.product_link.set_label(url);
+            if let Some(label) = w.product_link.child().and_downcast::<gtk::Label>() {
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            }
+        }
         let commit = state.project.as_ref().and_then(|p| p.commit.as_ref());
         w.commits.set_current(commit);
         w.tabs.set_visible(commit.is_none());
@@ -778,7 +920,7 @@ impl Window {
             w.progress.remove_css_class("done");
         }
 
-        let unsent: usize = project.review.files.keys().map(|p| project.review.unsent_notes(p)).sum();
+        let unsent = project.review.unsent();
         w.post_count.set_text(&unsent.to_string());
         w.post_count.set_visible(unsent > 0);
     }
@@ -797,12 +939,20 @@ impl Window {
             }
             return;
         };
+        let url = project.request.as_ref().and_then(|r| r.url.as_ref());
+        w.view_switch.set_visible(url.is_some());
+        if state.product {
+            w.product.set_notes(&project.review.product);
+            w.content_stack.set_visible_child_name("product");
+            return;
+        }
         if !project.loaded {
             w.content_stack.set_visible_child_name("loading");
             return;
         }
         if project.visible_entries(mode).next().is_none() {
             let (title, description) = match mode {
+                _ if project.request.is_some() => ("No Changes", "This version changes no files."),
                 _ if project.commit.is_some() => ("No Changes", "This commit changes no files."),
                 DiffMode::All => ("No Changes", "Nothing to review yet. Changes appear here as your agent works."),
                 DiffMode::Staged => ("No Staged Changes", "Nothing has been staged yet."),
@@ -848,9 +998,32 @@ impl Window {
 
     // ----- Navigation ----------------------------------------------------
 
+    /// Brings the running product of the version under review to the front,
+    /// or the code.
+    fn show_product(&self, product: bool) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            let has_product = state.project.as_ref().and_then(|p| p.request.as_ref()).is_some_and(|r| r.url.is_some());
+            state.product = product && has_product;
+        }
+        self.sync_view_action();
+        self.render_content();
+        self.update_actions();
+    }
+
+    fn sync_view_action(&self) {
+        let product = self.0.state.borrow().product;
+        if let Some(action) = self.0.w.window.lookup_action("view").and_downcast::<gio::SimpleAction>() {
+            action.set_state(&(if product { "product" } else { "code" }).to_variant());
+        }
+    }
+
     /// Scrolls the review panel to a file.
     fn select(&self, path: Option<String>, from_list: bool) {
         let Some(path) = path else { return };
+        if self.0.state.borrow().product {
+            self.show_product(false);
+        }
         if !from_list {
             self.0.w.files.select(Some(&path));
         }
@@ -875,16 +1048,22 @@ impl Window {
 
     // ----- History -------------------------------------------------------
 
-    /// Reviews `commit`, or the uncommitted changes for `None`.
-    fn review_commit(&self, commit: Option<Commit>) {
+    /// Reviews `commit`, or the uncommitted changes for `None`; or the version
+    /// `request`, whose commit `commit` is.
+    fn review_commit(&self, commit: Option<Commit>, request: Option<ReviewRequest>) {
         {
             let mut state = self.0.state.borrow_mut();
+            // A version's running product comes first.
+            let product = request.as_ref().is_some_and(|r| r.url.is_some());
             let Some(project) = state.project.as_mut() else { return };
-            if project.commit_id() == commit.as_ref().map(|c| c.id.as_str()) {
+            if project.commit_id() == commit.as_ref().map(|c| c.id.as_str())
+                && project.request.as_ref().map(|r| r.id) == request.as_ref().map(|r| r.id)
+            {
                 return;
             }
-            project.review = store::load_review(&project.repo.path(), commit.as_ref().map(|c| c.id.as_str()));
+            project.review = store::load_review(&project.repo.path(), &review_of(commit.as_ref(), request.as_ref()));
             project.commit = commit;
+            project.request = request;
             let status = &project.snapshot.status;
             let status = RepoStatus { branch: status.branch.clone(), has_head: status.has_head, entries: Vec::new() };
             project.snapshot = Snapshot { status, ..Snapshot::default() };
@@ -892,10 +1071,52 @@ impl Window {
             project.loaded = false;
             state.generation += 1;
             state.selected = None;
+            state.product = product;
         }
         self.0.w.review.clear();
+        self.sync_view_action();
+        let url = self.0.state.borrow().project.as_ref().and_then(|p| p.request.as_ref()).and_then(|r| r.url.clone());
+        if let Some(url) = url {
+            self.0.w.product.open(&url);
+        }
         self.render();
         self.refresh();
+    }
+
+    /// Reviews the version the banner announces.
+    fn review_ready_request(&self) {
+        let (repo, request) = {
+            let state = self.0.state.borrow();
+            let Some(project) = state.project.as_ref() else { return };
+            let Some(request) = project.ready_request() else { return };
+            (project.repo.clone(), request.clone())
+        };
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            let id = request.commit.clone();
+            let reader = repo.clone();
+            let result = gio::spawn_blocking(move || reader.commit(&id)).await;
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Self(inner);
+            if this.0.state.borrow().project.as_ref().is_none_or(|p| p.repo != repo) {
+                return;
+            }
+            match result {
+                Ok(Ok(commit)) => this.review_commit(Some(commit), Some(request)),
+                Ok(Err(err)) => this.toast(&format!("Could not open the version: {err:#}")),
+                Err(_) => this.toast("Opening the version failed unexpectedly"),
+            }
+        });
+    }
+
+    /// Tells the user about a version the agent asked to have reviewed, unless
+    /// they are looking at the window.
+    fn notify_request(&self, request: &ReviewRequest) {
+        let window = &self.0.w.window;
+        let Some(app) = window.application().filter(|_| !window.is_active()) else { return };
+        let notification = gio::Notification::new(&format!("Version {} is ready for review", request.short_id()));
+        notification.set_body(Some(&request.subject));
+        app.send_notification(Some("review-request"), &notification);
     }
 
     /// Reads the latest `limit` commits for the history.
@@ -944,6 +1165,10 @@ impl Window {
     }
 
     fn open_composer(&self, lines: bool) {
+        if self.0.state.borrow().product {
+            self.0.w.product.open_composer();
+            return;
+        }
         let selected = self.0.state.borrow().selected.clone();
         if let Some(path) = selected {
             self.0.w.review.open_composer(&path, lines);
@@ -964,6 +1189,42 @@ impl Window {
             project.save_review();
         }
         self.render_review_change(path);
+    }
+
+    fn add_product_note(&self, page: &str, body: &str) {
+        {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            project.review.add_product_note(page, body, project.author.as_ref(), app_core::now());
+            project.save_review();
+        }
+        self.render_content();
+        self.render_toolbar();
+    }
+
+    fn delete_product_note(&self, id: u64) {
+        let (note, key) = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            let note = project.review.product.iter().find(|n| n.id == id).cloned();
+            project.review.remove_product_note(id);
+            project.save_review();
+            (note, project.review_key())
+        };
+        self.render_content();
+        self.render_toolbar();
+
+        let Some(note) = note else { return };
+        let toast = adw::Toast::builder().title("Comment deleted").button_label("Undo").build();
+        let weak = self.weak();
+        toast.connect_button_clicked(move |_| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Self(inner);
+            this.edit_review(&key, |review| review.restore_product_note(note.clone()));
+            this.render_content();
+            this.render_toolbar();
+        });
+        self.0.w.toasts.add_toast(toast);
     }
 
     fn delete_note(&self, path: &str, id: u64) {
@@ -1001,18 +1262,18 @@ impl Window {
                 return;
             }
         }
-        let mut review = store::load_review(&key.path, key.commit.as_deref());
+        let mut review = store::load_review(&key.path, &key.of);
         edit(&mut review);
-        if let Err(err) = store::save_review(&key.path, key.commit.as_deref(), &review) {
+        if let Err(err) = store::save_review(&key.path, &key.of, &review) {
             eprintln!("agent-review: could not save review: {err}");
         }
     }
 
     fn confirm_clear_review(&self) {
-        let body = if self.in_commit() {
-            "All approvals and comments on this commit will be deleted."
-        } else {
-            "All approvals and comments for this project will be deleted."
+        let body = match self.0.state.borrow().project.as_ref().map(Project::review_of) {
+            Some(ReviewOf::Version { .. }) => "All approvals and comments on this version will be deleted.",
+            Some(ReviewOf::Commit(_)) => "All approvals and comments on this commit will be deleted.",
+            _ => "All approvals and comments for this project will be deleted.",
         };
         let dialog = adw::AlertDialog::new(Some("Clear Review?"), Some(body));
         dialog.add_responses(&[("cancel", "_Cancel"), ("clear", "_Clear Review")]);
@@ -1077,16 +1338,26 @@ impl Window {
         let (posted, key, queue) = {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = state.project.as_mut() else { return };
-            // In the order of the feedback: files as listed, then comments as written.
-            let comments: Vec<_> = ids
-                .iter()
-                .filter_map(|&id| {
-                    project.review.files.iter().find_map(|(path, file)| {
-                        let note = file.notes.iter().find(|n| n.id == id)?;
-                        Some((id, path.clone(), note.anchor.clone(), note.body.clone()))
+            // In the order of the feedback: the product, files as listed, then comments as written.
+            let comments: Vec<PostedComment> =
+                ids.iter()
+                    .filter_map(|&id| {
+                        let on_product = project.review.product.iter().find(|n| n.id == id).map(|n| (String::new(), n));
+                        let (path, note) = on_product.or_else(|| {
+                            project.review.files.iter().find_map(|(path, file)| {
+                                file.notes.iter().find(|n| n.id == id).map(|n| (path.clone(), n))
+                            })
+                        })?;
+                        Some(PostedComment {
+                            id: 0,
+                            note_id: id,
+                            path,
+                            anchor: note.anchor.clone(),
+                            page: note.page.clone(),
+                            body: note.body.clone(),
+                        })
                     })
-                })
-                .collect();
+                    .collect();
             let now = app_core::now();
             let posted = project.queue.post(project.reviewed_commit(), comments, now);
             if posted.is_ok() {
@@ -1251,6 +1522,14 @@ impl Window {
     }
 }
 
+fn review_of(commit: Option<&Commit>, request: Option<&ReviewRequest>) -> ReviewOf {
+    match (commit, request) {
+        (_, Some(request)) => ReviewOf::Version { base: request.base.clone() },
+        (Some(commit), None) => ReviewOf::Commit(commit.id.clone()),
+        (None, None) => ReviewOf::Changes,
+    }
+}
+
 /// The header details of a file after its line counts: kind of change and rename.
 fn file_meta(entry: &StatusEntry, diff: Option<&FileDiff>, mode: DiffMode) -> String {
     let mut meta = vec![entry.kind_in(mode).label().to_owned()];
@@ -1352,9 +1631,22 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         .build();
     menu_button.add_css_class("flat");
 
+    let view_switch = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    view_switch.add_css_class("linked");
+    view_switch.set_visible(false);
+    for (id, label, tooltip) in [("product", "Product", "The Running Product"), ("code", "Code", "The Code Changes")] {
+        let button = gtk::ToggleButton::builder()
+            .label(label)
+            .tooltip_text(tooltip)
+            .action_name("win.view")
+            .action_target(&id.to_variant())
+            .build();
+        view_switch.append(&button);
+    }
+
     let header = adw::HeaderBar::new();
     header.add_css_class("topbar");
-    header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+    header.set_title_widget(Some(&view_switch));
     header.pack_start(&sidebar_toggle);
     header.pack_start(switcher.widget());
     header.pack_end(&menu_button);
@@ -1397,12 +1689,16 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     commit_body.set_wrap_mode(gtk::pango::WrapMode::WordChar);
     commit_body.set_lines(6);
     commit_body.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let product_link =
+        gtk::LinkButton::builder().halign(gtk::Align::Start).tooltip_text("Open the Running Product").build();
+    product_link.add_css_class("product-link");
     let commit_info = gtk::Box::new(gtk::Orientation::Vertical, 6);
     commit_info.set_margin_start(4);
     commit_info.set_margin_end(4);
     commit_info.set_visible(false);
     commit_info.append(&commit_meta);
     commit_info.append(&commit_body);
+    commit_info.append(&product_link);
     tools.append(commits.widget());
     tools.append(&commit_info);
     tools.append(&tabs);
@@ -1475,9 +1771,13 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     content_stack.add_named(&clean_page, Some("clean"));
     content_stack.add_named(&select_page, Some("select"));
     content_stack.add_named(review.widget(), Some("diff"));
+    let product = ProductView::new();
+    content_stack.add_named(product.widget(), Some("product"));
 
+    let banner = adw::Banner::new("");
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.add_css_class("main-area");
+    main.append(&banner);
     main.append(&content_stack);
 
     let paned = gtk::Paned::builder()
@@ -1518,13 +1818,17 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         commit_info,
         commit_meta,
         commit_body,
+        product_link,
         tabs,
         mode_counts,
         search,
         files,
         sidebar_stack,
         content_stack,
+        banner,
         review,
+        view_switch,
+        product,
         review_actions,
         progress,
         post_count,

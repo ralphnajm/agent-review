@@ -57,6 +57,16 @@ pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) ->
         }
     }
 
+    let product: Vec<&Note> = review.product.iter().filter(wanted).collect();
+    if !product.is_empty() {
+        sections.push_str("## The running product\n\n");
+        for note in product {
+            feedback.note_ids.push(note.id);
+            write_page_comment(&mut sections, note.page.as_deref(), &note.body, "");
+        }
+        sections.push('\n');
+    }
+
     for (path, diff, current) in ordered {
         let notes: Vec<&Note> = review.notes(path).iter().filter(wanted).collect();
         if notes.is_empty() {
@@ -87,7 +97,10 @@ pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) ->
 
     let reviewed = options.commit.as_ref().map_or_else(
         || "the current uncommitted changes".to_owned(),
-        |c| format!("commit {} ({})", c.short_id(), c.subject),
+        |c| {
+            let what = if c.base.is_some() { "version" } else { "commit" };
+            format!("{what} {} ({})", c.short_id(), c.subject)
+        },
     );
     let mut text = format!("I reviewed {reviewed}. ");
     if feedback.note_ids.is_empty() {
@@ -137,6 +150,24 @@ pub fn write_comment(out: &mut String, anchor: Option<&LineAnchor>, body: &str, 
             let _ = writeln!(out, "- **File**{tag}");
         }
     }
+    write_body(out, body);
+}
+
+/// Writes one comment on the running product, on the page at `page`, as a
+/// Markdown list item; `tag` follows its label.
+pub fn write_page_comment(out: &mut String, page: Option<&str>, body: &str, tag: &str) {
+    match page {
+        Some(page) => {
+            let _ = writeln!(out, "- **Page**{tag}: {}", code_span(page));
+        }
+        None => {
+            let _ = writeln!(out, "- **Product**{tag}");
+        }
+    }
+    write_body(out, body);
+}
+
+fn write_body(out: &mut String, body: &str) {
     for line in body.lines() {
         if line.trim().is_empty() {
             out.push('\n');
@@ -255,9 +286,25 @@ These files look good, no changes needed:
         let mut review = ReviewState::default();
         review.add_note("a.rs", None, "Fix", None, 1);
         let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
-        let commit = ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add a.rs".into() };
-        let text = build(&review, &files, &Options { commit: Some(commit), ..Options::default() }).text;
+        let commit = ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add a.rs".into(), base: None };
+        let text = build(&review, &files, &Options { commit: Some(commit.clone()), ..Options::default() }).text;
         assert!(text.starts_with("I reviewed commit 0123456 (Add a.rs). Please address the following notes."));
+        let version = ReviewedCommit { base: Some("fedcba9876543210".into()), ..commit };
+        let text = build(&review, &files, &Options { commit: Some(version), ..Options::default() }).text;
+        assert!(text.starts_with("I reviewed version 0123456 (Add a.rs)."));
+    }
+
+    #[test]
+    fn product_comments_come_first() {
+        let mut review = ReviewState::default();
+        review.add_note("a.rs", None, "Fix", None, 1);
+        review.add_product_note("http://localhost:5173/pricing", "Make the plans\n\nline up.", None, 2);
+        let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
+        let feedback = build(&review, &files, &Options::default());
+        assert_eq!(feedback.note_ids, [2, 1]);
+        assert!(feedback.text.contains(
+            "## The running product\n\n- **Page**: `http://localhost:5173/pricing`\n  Make the plans\n\n  line up.\n\n## `a.rs`"
+        ), "{}", feedback.text);
     }
 
     #[test]

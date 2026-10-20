@@ -42,10 +42,26 @@ fn latest_version(json: &[u8]) -> Option<String> {
     Some(tag.strip_prefix('v').unwrap_or(tag).to_owned())
 }
 
-/// Whether version `a` comes after `b`, comparing their numbers in turn.
+/// Whether version `a` comes after `b`, comparing their numbers in turn. A
+/// pre-release (`1.0.0-alpha.1`) comes before its release.
 fn is_newer(a: &str, b: &str) -> bool {
-    let numbers = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    numbers(a) > numbers(b)
+    let parse = |v: &str| {
+        let (core, pre) = v.split_once('-').map_or((v, None), |(core, pre)| (core, Some(pre)));
+        let numbers: Vec<u64> = core.split('.').map(|n| n.parse().unwrap_or(0)).collect();
+        // Pre-release identifiers compare as numbers when they are numbers.
+        let pre: Option<Vec<(u64, String)>> =
+            pre.map(|p| p.split('.').map(|id| (id.parse().unwrap_or(u64::MAX), id.to_owned())).collect());
+        (numbers, pre)
+    };
+    let ((a_core, a_pre), (b_core, b_pre)) = (parse(a), parse(b));
+    match a_core.cmp(&b_core) {
+        std::cmp::Ordering::Equal => match (a_pre, b_pre) {
+            (None, Some(_)) => true,
+            (Some(a), Some(b)) => a > b,
+            _ => false,
+        },
+        order => order.is_gt(),
+    }
 }
 
 /// Where the update script is downloaded from.
@@ -114,6 +130,13 @@ mod tests {
         assert!(is_newer("1.0.0", "0.99.1"));
         assert!(!is_newer("0.9.0", "0.9.0"));
         assert!(!is_newer("0.8.2", "0.9.0"));
+        assert!(is_newer("1.0.0", "1.0.0-alpha.1"));
+        assert!(!is_newer("1.0.0-alpha.1", "1.0.0"));
+        assert!(is_newer("1.0.0-alpha.1", "0.10.0"));
+        assert!(is_newer("1.0.0-alpha.2", "1.0.0-alpha.1"));
+        assert!(is_newer("1.0.0-alpha.10", "1.0.0-alpha.9"));
+        assert!(is_newer("1.0.0-beta.1", "1.0.0-alpha.3"));
+        assert!(!is_newer("1.0.0-alpha.1", "1.0.0-alpha.1"));
     }
 
     #[test]

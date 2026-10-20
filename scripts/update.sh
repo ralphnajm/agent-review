@@ -66,8 +66,10 @@ main() {
     release=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")
     latest=$(echo "$release" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
     [ -n "$latest" ] || fail "Could not find the latest release"
-    # Also true for a build newer than the latest release.
-    if [ "$(printf '%s\n' "$latest" "$version" | sort -V | tail -n 1)" = "$version" ]; then
+    # Also true for a build newer than the latest release. Pre-releases
+    # (1.0.0-alpha.1) sort before their release once written 1.0.0~alpha.1.
+    newest=$(printf '%s\n' "$latest" "$version" | tr '-' '~' | sort -V | tail -n 1)
+    if [ "$newest" = "$(echo "$version" | tr '-' '~')" ]; then
         echo "Agent Review $version is up to date"
         exit "$UP_TO_DATE"
     fi

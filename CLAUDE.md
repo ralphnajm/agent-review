@@ -17,12 +17,16 @@ Describe every user-facing change in `CHANGELOG.md` under `## [Unreleased]` (`Ad
 3. Add `<release version="x.y.z" date="YYYY-MM-DD"/>` at the top of `<releases>` in `data/io.github.ralphnajm.AgentReview.metainfo.xml`.
 4. `make check` verifies steps 2 and 3.
 
+A version with a pre-release suffix (`1.0.0-alpha.1`) is published as a GitHub pre-release, which the install script and Check for Updates skip; give its AppStream `<release>` `type="development"`.
+
+The agent skill in `skills/agent-review/SKILL.md` (installed with `npx skills add ralphnajm/agent-review`) describes the review workflow for agents: keep it in step with the MCP tools and their instructions in `src/core/mcp.rs`.
+
 ## Conventions
 
 - Keep `src/core/` free of GTK so it stays unit-testable; UI code goes in `src/ui/`.
 - Feedback reaches the agent only through the clipboard or the MCP server (`agent-review --mcp`, `src/core/mcp.rs`), which the agent pulls from: no terminal launching or agent-specific integration. Keep user-facing text agent-neutral.
-- The app and the MCP server share the review queue on disk (`src/core/queue.rs`). Keep one writer per file: the app writes posted reviews, the server writes progress.
+- The app and the MCP server share the review queue on disk (`src/core/queue.rs`). Keep one writer per file: the app writes posted reviews, the server writes progress and review requests.
 - Git is accessed through the `git` CLI with `--no-optional-locks` so refreshes never touch the index (which would retrigger the watcher).
 - Review state is stored under XDG data dirs, never in the reviewed repository.
-- Target GTK 4.14 / libadwaita 1.5 / GtkSourceView 5.12 (Ubuntu 24.04); don't enable newer feature flags.
+- Target GTK 4.14 / libadwaita 1.5 / GtkSourceView 5.12 / WebKitGTK 2.44 (Ubuntu 24.04); don't enable newer feature flags.
 - The UI follows a compact, flat style: one top bar with review state and actions on the right, file panel on the left, comments inline in the diff.

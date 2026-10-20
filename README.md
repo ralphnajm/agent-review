@@ -20,8 +20,9 @@ happens*: the diff of every uncommitted change updates live as the agent edits, 
 comments on lines and files as you read, and when you're ready you hand the agent all your
 feedback at once: post it for the agent to pull, or copy it as one tidy Markdown prompt.
 
-It's built with Rust, GTK 4 and libadwaita. No web view, no Electron: the release binary is
-about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
+It's built with Rust, GTK 4 and libadwaita, no Electron: the release binary is about 1 MB and
+uses the GTK and WebKitGTK libraries Fedora and Ubuntu already ship. WebKit only starts once
+you open a product to review.
 
 ## How it works
 
@@ -56,6 +57,13 @@ about 1 MB and uses the GTK libraries Fedora and Ubuntu already ship.
   - Comments appear inline, under the lines they refer to.
   - Comments already sent to the agent leave the diff. The clock button next to the file
     name shows how many there are and opens them above the diff for reference.
+- **Review requests:** your agent can commit its work and ask you to review that version, with
+  a link to the running product. A banner tells you it's ready; **Review** opens the product
+  inside Agent Review, where you click through it and comment on the pages, and **Code** shows
+  everything the version changes since its branch left its upstream (or since its parent commit
+  without one). Comments on the product go to your agent together with the code comments.
+  Comments and reviewed files carry over when the agent amends the version and asks again, and a
+  version the repository has moved past is marked out of date.
 - **Reviewed checkbox:** tick the box next to the file name to mark the file done. It
   collapses to its header and the view moves on to the next file to review. Commenting on a
   file also marks it reviewed. If the file changes afterwards, it opens again, flagged for
@@ -89,8 +97,8 @@ Review state lives in `~/.local/share/agent-review/`, never inside your reposito
 
 ## Installation
 
-Agent Review needs GTK ≥ 4.14, libadwaita ≥ 1.5, GtkSourceView ≥ 5.12 and git. Fedora 40+
-and Ubuntu 24.04+ have all of them.
+Agent Review needs GTK ≥ 4.14, libadwaita ≥ 1.5, GtkSourceView ≥ 5.12, WebKitGTK ≥ 2.44 (the
+GTK 4 build, `webkitgtk-6.0`) and git. Fedora 40+ and Ubuntu 24.04+ have all of them.
 
 ### Packages
 
@@ -161,9 +169,19 @@ Agents configured with an `mcpServers` JSON file, such as Gemini CLI and Cursor:
 { "mcpServers": { "agent-review": { "command": "agent-review", "args": ["--mcp"] } } }
 ```
 
-Then post a review and ask the agent to "pull my review". The server gives the agent two
-tools: `get_review` returns the open comments for the repository it is working in, and
-`resolve_comments` marks the ones it has addressed, which you see in *Posted reviews*.
+To teach your agent the whole workflow (committing a version, starting the product, requesting
+a review, and addressing your comments), also install the Agent Review skill, which works with
+Claude Code, Codex, Cursor and the other agents that support
+[Agent Skills](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add ralphnajm/agent-review        # add -g to install it for all your projects
+```
+
+Then post a review and ask the agent to "pull my review". The server gives the agent three
+tools: `request_review` asks you to review the version it committed, `get_review` returns the
+open comments for the repository it is working in, and `resolve_comments` marks the ones it
+has addressed, which you see in *Posted reviews*.
 
 ## Development
 
@@ -174,9 +192,9 @@ release, so local builds and CI use the same compiler. Other build dependencies:
 
 ```sh
 # Fedora
-sudo dnf install rustup gtk4-devel libadwaita-devel gtksourceview5-devel desktop-file-utils appstream
+sudo dnf install rustup gtk4-devel libadwaita-devel gtksourceview5-devel webkitgtk6.0-devel desktop-file-utils appstream
 # Ubuntu
-sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev desktop-file-utils appstream
+sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev desktop-file-utils appstream
 ```
 
 | Command | What it does |

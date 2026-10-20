@@ -148,14 +148,14 @@ type FocusCallback = Box<dyn Fn()>;
 /// Reads the new side of the file, for the unchanged lines; replies with `None` if it can't.
 type LoadCallback = Box<dyn Fn(Box<dyn FnOnce(Option<String>)>)>;
 
-struct Composer {
-    root: gtk::Box,
+pub(super) struct Composer {
+    pub(super) root: gtk::Box,
     /// Who the comment is by.
-    author: gtk::Label,
-    title: gtk::Label,
-    text: gtk::TextView,
-    cancel: gtk::Button,
-    submit: gtk::Button,
+    pub(super) author: gtk::Label,
+    pub(super) title: gtk::Label,
+    pub(super) text: gtk::TextView,
+    pub(super) cancel: gtk::Button,
+    pub(super) submit: gtk::Button,
 }
 
 /// Comments from earlier rounds: those already sent to the agent.
@@ -1850,7 +1850,7 @@ impl DiffView {
     }
 }
 
-fn build_composer() -> Composer {
+pub(super) fn build_composer() -> Composer {
     let author = util::label("", &["comment-author"]);
     show_author(&author, None);
     let title = util::label("", &["comment-meta"]);
@@ -1907,7 +1907,7 @@ fn build_composer() -> Composer {
 }
 
 /// Shows the author's name, with their email on hover, or "Unknown" when git has no name.
-fn show_author(label: &gtk::Label, author: Option<&Author>) {
+pub(super) fn show_author(label: &gtk::Label, author: Option<&Author>) {
     label.set_text(author.map_or("Unknown", |a| a.name.as_str()));
     label.set_tooltip_text(author.and_then(|a| a.email.as_deref()));
 }

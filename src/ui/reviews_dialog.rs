@@ -94,7 +94,11 @@ fn build_group(entry: &Entry, now: i64) -> adw::PreferencesGroup {
     for comment in comments {
         let (name, dir) = util::split_path(&comment.path);
         let target = comment.anchor.as_ref().map_or_else(|| "File".to_owned(), LineAnchor::label);
-        let title = if dir.is_empty() { format!("{name} · {target}") } else { format!("{name} · {target} · {dir}") };
+        let title = match &comment.page {
+            Some(page) => format!("Product · {page}"),
+            None if dir.is_empty() => format!("{name} · {target}"),
+            None => format!("{name} · {target} · {dir}"),
+        };
         let row = adw::ActionRow::builder()
             .title(title)
             .subtitle(comment.body.lines().find(|l| !l.trim().is_empty()).unwrap_or_default())

@@ -5,6 +5,35 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.1] - 2026-10-20
+
+The first preview of product review: your agent hands you a version of its work, and you review the running product
+next to the code. A pre-release, so the install script and Check for Updates don't offer it: download it from this
+release to try it.
+
+### Added
+
+- Review requests: when your agent finishes a set of changes, it can commit them and ask you to review that version
+  through the MCP server's new `request_review` tool, with a link to the running product. A banner announces
+  "Version … is ready for review" (with a desktop notification when the window is in the background), and
+  **Review** shows everything the version changes since its branch left its upstream, or since its parent commit without one. When the agent amends the
+  version or adds commits and asks again, your comments and reviewed files carry over, and files that changed open
+  again for another look. A version the repository has moved past is marked out of date. Posted or copied feedback
+  tells your agent which version it is about.
+- Review the running product: a version with a link opens its product inside Agent Review, in an embedded browser
+  with back, forward and reload. **Product** and **Code** at the top switch between the product and the code
+  changes. Comment on any page from the comments panel beside it (Ctrl+M); the comments name the page and reach your
+  agent with the code comments. Logins to your product are remembered, Open in Browser opens the current page in
+  your browser, and right-click **Inspect Element** opens the web inspector.
+- An agent skill that teaches your coding agent the review workflow: when to request a review, how to address your
+  comments on the code and the product, and how to hand over the next version. Install it with
+  `npx skills add ralphnajm/agent-review`.
+
+### Changed
+
+- Agent Review now needs WebKitGTK 2.44 or later (`webkitgtk6.0` on Fedora, `libwebkitgtk-6.0-4` on Ubuntu). It only
+  starts once you open a product.
+
 ## [0.10.0] - 2026-10-14
 
 ### Added

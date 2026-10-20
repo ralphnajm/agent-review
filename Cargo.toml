@@ -1,6 +1,6 @@
 [package]
 name = "agent-review"
-version = "0.10.0"
+version = "1.0.0-alpha.1"
 edition = "2024"
 rust-version = "1.99"
 description = "Review the changes coding agents make and hand your feedback back to them"
@@ -20,6 +20,7 @@ notify = { version = "8.2.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sourceview5 = { version = "0.11.2", features = ["v5_12"] }
+webkit6 = { version = "0.6.1", features = ["v2_44"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
@@ -85,3 +86,4 @@ git = "*"
 gtk4 = ">= 4.14"
 libadwaita = ">= 1.5"
 gtksourceview5 = ">= 5.12"
+"webkitgtk6.0" = ">= 2.44"

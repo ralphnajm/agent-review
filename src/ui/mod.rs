@@ -4,6 +4,7 @@ mod commit_picker;
 mod diff_view;
 mod file_list;
 mod highlight;
+mod product_view;
 mod project_switcher;
 mod review_panel;
 mod reviews_dialog;

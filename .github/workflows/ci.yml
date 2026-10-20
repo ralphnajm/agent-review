@@ -21,7 +21,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev desktop-file-utils appstream
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev desktop-file-utils appstream
       # rustup installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitgtk-6.0-dev
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-24.04
     container: fedora:44
     steps:
-      - run: dnf install -y git make gcc rustup rpm-build gtk4-devel libadwaita-devel gtksourceview5-devel
+      - run: dnf install -y git make gcc rustup rpm-build gtk4-devel libadwaita-devel gtksourceview5-devel webkitgtk6.0-devel
       - run: rustup-init -y --profile minimal --default-toolchain none
       - uses: actions/checkout@v5
       - run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -97,7 +97,11 @@ jobs:
         run: |
           version="${{ steps.version.outputs.version }}"
           scripts/release-notes.sh "$version" > notes.md
+          # A pre-release (1.0.0-alpha.1) stays out of "latest", which the
+          # install script and Check for Updates use.
+          prerelease=""
+          case "$version" in *-*) prerelease="--prerelease" ;; esac
           gh release create "v$version" dist/*.deb dist/*.rpm \
             --title "Agent Review $version" \
             --notes-file notes.md \
-            --target "$GITHUB_SHA"
+            --target "$GITHUB_SHA" $prerelease

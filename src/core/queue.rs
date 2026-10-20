@@ -1,10 +1,12 @@
 //! Posted reviews: the comments the user hands to the agent, which pulls them
-//! through the MCP server (see [`crate::core::mcp`]) and resolves them.
+//! through the MCP server (see [`crate::core::mcp`]) and resolves them. And
+//! review requests, in which the agent asks the user to review a version.
 //!
 //! Each repository has a queue directory under the XDG data dir. The app
 //! writes a review once, when it is posted; the MCP server records what the
-//! agent did with it in a separate progress file. Every file has a single
-//! writer, so the two processes never overwrite each other's changes.
+//! agent did with it in a separate progress file, and writes each review
+//! request once. Every file has a single writer, so the two processes never
+//! overwrite each other's changes.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,10 +22,13 @@ pub struct PostedComment {
     pub id: u64,
     /// The review note the comment was posted from.
     pub note_id: u64,
-    /// Relative to the repository root.
+    /// Relative to the repository root; empty for a comment on the running product.
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<LineAnchor>,
+    /// For a comment on the running product, the address of the page it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
     pub body: String,
 }
 
@@ -36,6 +41,30 @@ pub struct PostedReview {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<ReviewedCommit>,
     pub comments: Vec<PostedComment>,
+}
+
+/// A version the agent asks the user to review: the changes from `base` to
+/// `commit`, and the running product at `url`. Written by the MCP server once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    pub id: u64,
+    pub requested_at: i64,
+    pub commit: String,
+    pub subject: String,
+    /// The rest of the commit message.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    /// The commit the changes are compared to.
+    pub base: String,
+    /// Where the running product can be opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+impl ReviewRequest {
+    pub fn short_id(&self) -> &str {
+        self.commit.get(..7).unwrap_or(&self.commit)
+    }
 }
 
 /// What the agent did with a posted review. Written by the MCP server only.
@@ -119,21 +148,18 @@ impl Queue {
         entries
     }
 
-    /// Posts `comments` on `commit`, or on the uncommitted changes, given as
-    /// (note id, path, anchor, body), as a new review.
+    /// Posts `comments` on `commit`, or on the uncommitted changes, as a new
+    /// review, numbering them.
     pub fn post(
         &self,
         commit: Option<ReviewedCommit>,
-        comments: impl IntoIterator<Item = (u64, String, Option<LineAnchor>, String)>,
+        comments: impl IntoIterator<Item = PostedComment>,
         now: i64,
     ) -> std::io::Result<PostedReview> {
         let entries = self.load();
         let id = entries.last().map_or(0, |e| e.review.id) + 1;
         let first_comment = entries.iter().flat_map(|e| &e.review.comments).map(|c| c.id).max().unwrap_or(0) + 1;
-        let comments = (first_comment..)
-            .zip(comments)
-            .map(|(id, (note_id, path, anchor, body))| PostedComment { id, note_id, path, anchor, body })
-            .collect();
+        let comments = (first_comment..).zip(comments).map(|(id, comment)| PostedComment { id, ..comment }).collect();
         let review = PostedReview { id, posted_at: now, commit, comments };
         store::write_json(&self.review_file(id), &review)?;
         Ok(review)
@@ -180,6 +206,38 @@ impl Queue {
         Ok(resolved)
     }
 
+    /// Every review request, oldest first.
+    pub fn requests(&self) -> Vec<ReviewRequest> {
+        let Ok(files) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        let mut requests: Vec<ReviewRequest> = files
+            .flatten()
+            .filter(|file| file.file_name().to_str().is_some_and(|name| name.ends_with(".request.json")))
+            .filter_map(|file| store::read_json(&file.path()))
+            .collect();
+        requests.sort_by_key(|r| r.id);
+        requests
+    }
+
+    /// Records a request to review `request`, giving it the next id. Several
+    /// agents may request reviews at once, so the file is only ever created.
+    pub fn request(&self, mut request: ReviewRequest) -> std::io::Result<ReviewRequest> {
+        std::fs::create_dir_all(&self.dir)?;
+        loop {
+            request.id = self.requests().last().map_or(0, |r| r.id) + 1;
+            let file = self.dir.join(format!("{}.request.json", request.id));
+            let tmp = self.dir.join(format!("{}.request.{}.tmp", request.id, std::process::id()));
+            std::fs::write(&tmp, serde_json::to_vec_pretty(&request).map_err(std::io::Error::other)?)?;
+            // Linking fails if another agent took the id meanwhile.
+            let linked = std::fs::hard_link(&tmp, &file);
+            std::fs::remove_file(&tmp)?;
+            match linked {
+                Ok(()) => return Ok(request),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     fn review_file(&self, id: u64) -> PathBuf {
         self.dir.join(format!("{id}.review.json"))
     }
@@ -194,9 +252,9 @@ mod tests {
     use super::*;
     use crate::core::review::Side;
 
-    fn comment(note: u64, body: &str) -> (u64, String, Option<LineAnchor>, String) {
+    fn comment(note: u64, body: &str) -> PostedComment {
         let anchor = LineAnchor { side: Side::New, line: 3, end_line: None, text: "+x".into() };
-        (note, "a.rs".to_owned(), Some(anchor), body.to_owned())
+        PostedComment { id: 0, note_id: note, path: "a.rs".into(), anchor: Some(anchor), page: None, body: body.into() }
     }
 
     #[test]
@@ -225,6 +283,31 @@ mod tests {
         assert_eq!(statuses, [Status::Resolved, Status::PickedUp, Status::Resolved]);
         assert_eq!(entries[0].progress.pulled_at, Some(12));
         assert_eq!(entries[1].open().count(), 0);
+    }
+
+    #[test]
+    fn requests_get_their_own_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::at(dir.path().join("queue"));
+        assert_eq!(queue.requests(), []);
+        let request = ReviewRequest {
+            id: 0,
+            requested_at: 1,
+            commit: "0123456789abcdef".into(),
+            subject: "Add the parser".into(),
+            body: String::new(),
+            base: "fedcba9876543210".into(),
+            url: Some("http://localhost:5173".into()),
+        };
+        assert_eq!(queue.request(request.clone()).unwrap().id, 1);
+        assert_eq!(queue.request(request.clone()).unwrap().id, 2);
+        // Requests and posted reviews share the folder without mixing.
+        queue.post(None, [comment(1, "One")], 2).unwrap();
+        let requests = queue.requests();
+        assert_eq!(requests.iter().map(|r| r.id).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(requests[0], ReviewRequest { id: 1, ..request });
+        assert_eq!(requests[0].short_id(), "0123456");
+        assert_eq!(queue.load().len(), 1);
     }
 
     #[test]

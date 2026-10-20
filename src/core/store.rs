@@ -85,21 +85,35 @@ impl Settings {
     }
 }
 
-/// Review state for the project at `path`: of its uncommitted changes, or of `commit`.
-pub fn load_review(path: &Path, commit: Option<&str>) -> ReviewState {
-    read_json(&review_file(path, commit)).unwrap_or_default()
+/// Which review of a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewOf {
+    /// Of its uncommitted changes.
+    Changes,
+    Commit(String),
+    /// Of a version the agent asked to have reviewed. The versions compared to
+    /// the same base share a review, so it carries over to the next version.
+    Version {
+        base: String,
+    },
 }
 
-pub fn save_review(path: &Path, commit: Option<&str>, review: &ReviewState) -> std::io::Result<()> {
-    write_json(&review_file(path, commit), review)
+/// Review state for the project at `path`.
+pub fn load_review(path: &Path, of: &ReviewOf) -> ReviewState {
+    read_json(&review_file(path, of)).unwrap_or_default()
 }
 
-fn review_file(path: &Path, commit: Option<&str>) -> PathBuf {
+pub fn save_review(path: &Path, of: &ReviewOf, review: &ReviewState) -> std::io::Result<()> {
+    write_json(&review_file(path, of), review)
+}
+
+fn review_file(path: &Path, of: &ReviewOf) -> PathBuf {
     let key = hash::hex(path.as_os_str().as_encoded_bytes());
     let reviews = data_dir().join("reviews");
-    match commit {
-        None => reviews.join(format!("{key}.json")),
-        Some(id) => reviews.join("commits").join(key).join(format!("{id}.json")),
+    match of {
+        ReviewOf::Changes => reviews.join(format!("{key}.json")),
+        ReviewOf::Commit(id) => reviews.join("commits").join(key).join(format!("{id}.json")),
+        ReviewOf::Version { base } => reviews.join("versions").join(key).join(format!("{base}.json")),
     }
 }
 
@@ -107,6 +121,16 @@ fn review_file(path: &Path, commit: Option<&str>) -> PathBuf {
 pub fn queue_dir(root: &Path) -> PathBuf {
     let key = hash::hex(root.as_os_str().as_encoded_bytes());
     data_dir().join("queue").join(key)
+}
+
+/// Where the product view keeps cookies and other website data, so logins
+/// to the products under review last.
+pub fn web_data_dir() -> PathBuf {
+    data_dir().join("web")
+}
+
+pub fn web_cache_dir() -> PathBuf {
+    xdg_dir("XDG_CACHE_HOME", ".cache").join(APP_DIR).join("web")
 }
 
 fn config_dir() -> PathBuf {

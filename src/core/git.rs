@@ -14,7 +14,7 @@ use crate::core::review::Author;
 use crate::core::status::{self, DiffMode, RepoStatus, StatusEntry};
 
 /// The well-known id of git's empty tree, used as the base before the first commit.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 const DIFF_ARGS: [&str; 7] =
     ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/"];
@@ -202,18 +202,65 @@ impl Repo {
     /// The changes commit `id` made to its first parent, as a snapshot whose
     /// entries are all staged.
     pub fn commit_snapshot(&self, id: &str) -> Result<Snapshot> {
-        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            bail!("{id} is not a commit id");
-        }
-        let output = self.command().args(["rev-parse", "--verify", "--quiet", &format!("{id}^")]).output()?;
-        let parent = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let base = if output.status.success() && !parent.is_empty() { parent.as_str() } else { EMPTY_TREE };
+        check_id(id)?;
+        let base = self.parent(id).unwrap_or_else(|| EMPTY_TREE.to_owned());
+        self.range_snapshot(&base, id)
+    }
+
+    /// The changes from commit `base` to commit `id`, as a snapshot whose
+    /// entries are all staged.
+    pub fn range_snapshot(&self, base: &str, id: &str) -> Result<Snapshot> {
+        check_id(base)?;
+        check_id(id)?;
         let mut args = DIFF_ARGS.to_vec();
         args.extend([base, id]);
         let all = parse_diffs(&self.run(&args)?);
         let mut entries: Vec<StatusEntry> = all.values().map(StatusEntry::committed).collect();
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(Snapshot { status: RepoStatus { branch: None, has_head: true, entries }, all, view: None })
+    }
+
+    /// The commit `HEAD` points at; `None` before the first commit.
+    pub fn head(&self) -> Option<String> {
+        self.rev_parse("HEAD")
+    }
+
+    /// The commit `rev` names, as a full id.
+    pub fn resolve(&self, rev: &str) -> Result<String> {
+        self.rev_parse(&format!("{rev}^{{commit}}")).with_context(|| format!("{rev} is not a commit"))
+    }
+
+    fn parent(&self, id: &str) -> Option<String> {
+        self.rev_parse(&format!("{id}^"))
+    }
+
+    fn rev_parse(&self, rev: &str) -> Option<String> {
+        let output =
+            self.command().args(["rev-parse", "--verify", "--quiet", "--end-of-options", rev]).output().ok()?;
+        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        (output.status.success() && !id.is_empty()).then_some(id)
+    }
+
+    /// Commit `id`, with its full message.
+    pub fn commit(&self, id: &str) -> Result<Commit> {
+        check_id(id)?;
+        let output = self.command().args(["show", "--no-patch", "-z", LOG_FORMAT, id]).output()?;
+        if !output.status.success() {
+            bail!("Commit {id} no longer exists");
+        }
+        parse_log(&output.stdout).into_iter().next().with_context(|| format!("Could not read commit {id}"))
+    }
+
+    /// What a review of the unpushed work up to commit `id` compares it to:
+    /// where the branch left its upstream, or else `id`'s parent.
+    pub fn review_base(&self, id: &str) -> String {
+        let output = self.command().args(["merge-base", id, "@{upstream}"]).stderr(Stdio::null()).output();
+        let fork = output
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|fork| !fork.is_empty() && fork != id);
+        fork.or_else(|| self.parent(id)).unwrap_or_else(|| EMPTY_TREE.to_owned())
     }
 
     /// The text of `path` as commit `id` left it. `None` for files too large
@@ -289,6 +336,13 @@ impl Repo {
             .status()
             .is_ok_and(|s| s.success())
     }
+}
+
+fn check_id(id: &str) -> Result<()> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("{id} is not a commit id");
+    }
+    Ok(())
 }
 
 fn parse_diffs(output: &[u8]) -> HashMap<String, FileDiff> {
@@ -445,6 +499,48 @@ mod tests {
         assert_eq!(subjects, ["Third", "First"]);
         assert_eq!(history.commits[0].parents, std::slice::from_ref(&first.id));
         assert_eq!(scoped.commit_snapshot(&second.id).unwrap().status.entries, []);
+    }
+
+    #[test]
+    fn reviews_the_unpushed_work_of_a_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        let repo = Repo::discover(root).unwrap();
+        assert_eq!(repo.head(), None);
+
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "Start"]);
+        let start = repo.head().unwrap();
+        // No parent and no upstream: everything.
+        assert_eq!(repo.review_base(&start), EMPTY_TREE);
+
+        git(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "Add b"]);
+        let middle = repo.head().unwrap();
+        // No upstream: the parent.
+        assert_eq!(repo.review_base(&middle), start);
+        std::fs::write(root.join("c.txt"), "c\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "Add c", "-m", "Details."]);
+        let head = repo.head().unwrap();
+        assert_eq!(repo.review_base(&head), middle);
+
+        // With an upstream: where the branch left it.
+        git(root, &["branch", "-q", "--set-upstream-to=main"]);
+        assert_eq!(repo.review_base(&head), start);
+        let snapshot = repo.range_snapshot(&start, &head).unwrap();
+        let paths: Vec<&str> = snapshot.status.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["b.txt", "c.txt"]);
+
+        assert_eq!(repo.resolve("HEAD~1").unwrap(), middle);
+        assert!(repo.resolve("nope").is_err());
+        let commit = repo.commit(&head).unwrap();
+        assert_eq!((commit.subject.as_str(), commit.body.as_str()), ("Add c", "Details."));
+        assert!(repo.commit("0123456789abcdef0123456789abcdef01234567").is_err());
     }
 
     #[test]
