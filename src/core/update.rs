@@ -1,13 +1,31 @@
-//! Updates: [`check`] asks GitHub for the latest release, and [`run`]
-//! downloads `scripts/update.sh` from the repository's main branch and runs
-//! it. The script finds out how the running binary was installed, updates it
-//! the same way, and starts the new version once this one has quit.
+//! Updates: [`check`] asks GitHub for the newest release on the user's
+//! [`Channel`], and [`run`] downloads `scripts/update.sh` from the
+//! repository's main branch and runs it. The script finds out how the running
+//! binary was installed, updates it the same way to the release checked, and
+//! starts the new version once this one has quit.
 
 use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::config;
+
+/// Which releases Check for Updates offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    Stable,
+    /// Stable releases and pre-releases such as `1.0.0-alpha.1`.
+    Prerelease,
+}
+
+impl Channel {
+    /// The channel of a user who never picked one: the one `version` came from.
+    pub fn of(version: &str) -> Self {
+        if version.contains('-') { Self::Prerelease } else { Self::Stable }
+    }
+}
 
 /// The script's exit status when the running version is already the latest.
 const UP_TO_DATE: i32 = 3;
@@ -19,27 +37,38 @@ pub enum Outcome {
     UpToDate,
 }
 
-/// The latest release's version when it is newer than this one, else `None`.
-pub fn check() -> Result<Option<String>> {
+/// The newest release on `channel` when it is newer than this version, else `None`.
+pub fn check(channel: Channel) -> Result<Option<String>> {
     let repo = config::REPOSITORY.trim_start_matches("https://github.com/");
+    // GitHub's latest release is the newest that isn't a pre-release.
+    let path = match channel {
+        Channel::Stable => "releases/latest",
+        Channel::Prerelease => "releases?per_page=30",
+    };
     let output = Command::new("curl")
         .args(["-fsSL", "-H", "Accept: application/vnd.github+json"])
-        .arg(format!("https://api.github.com/repos/{repo}/releases/latest"))
+        .arg(format!("https://api.github.com/repos/{repo}/{path}"))
         .stdin(Stdio::null())
         .output()
         .context("Could not run curl. Is it installed?")?;
     if !output.status.success() {
         bail!("Could not reach GitHub: {}", last_line(&output.stderr).unwrap_or("curl failed"));
     }
-    let latest = latest_version(&output.stdout).context("Could not find the latest release")?;
-    Ok(is_newer(&latest, config::VERSION).then_some(latest))
+    let newest = newest_version(&output.stdout).context("Could not find the latest release")?;
+    Ok(is_newer(&newest, config::VERSION).then_some(newest))
 }
 
-/// The version of the release GitHub's API describes in `json`.
-fn latest_version(json: &[u8]) -> Option<String> {
-    let release: serde_json::Value = serde_json::from_slice(json).ok()?;
-    let tag = release.get("tag_name")?.as_str()?;
-    Some(tag.strip_prefix('v').unwrap_or(tag).to_owned())
+/// The version of the newest release GitHub's API describes in `json`: one
+/// release, or a list of them.
+fn newest_version(json: &[u8]) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_slice(json).ok()?;
+    let releases = json.as_array().map_or_else(|| vec![&json], |list| list.iter().collect());
+    releases
+        .into_iter()
+        .filter(|r| r.get("draft").and_then(serde_json::Value::as_bool) != Some(true))
+        .filter_map(|r| r.get("tag_name")?.as_str())
+        .map(|tag| tag.strip_prefix('v').unwrap_or(tag).to_owned())
+        .reduce(|newest, version| if is_newer(&version, &newest) { version } else { newest })
 }
 
 /// Whether version `a` comes after `b`, comparing their numbers in turn. A
@@ -70,9 +99,10 @@ pub fn script_url() -> String {
     format!("https://raw.githubusercontent.com/{repo}/main/scripts/update.sh")
 }
 
-/// Downloads and runs the update script. Blocks until it is done, which can
-/// take minutes when the update is built from source.
-pub fn run() -> Result<Outcome> {
+/// Downloads and runs the update script to install `version`, as [`check`]
+/// found it. Blocks until it is done, which can take minutes when the update
+/// is built from source.
+pub fn run(version: &str) -> Result<Outcome> {
     let exe = std::env::current_exe().context("Could not find the running binary")?;
     let download = Command::new("curl")
         .args(["-fsSL", &script_url()])
@@ -90,6 +120,7 @@ pub fn run() -> Result<Outcome> {
         .arg(config::VERSION)
         .arg(exe)
         .arg(std::process::id().to_string())
+        .arg(version)
         .stdin(Stdio::null())
         .output()
         .context("Could not run the update script")?;
@@ -124,8 +155,15 @@ mod tests {
 
     #[test]
     fn compares_release_versions() {
-        assert_eq!(latest_version(br#"{"tag_name": "v0.10.0", "name": "0.10.0"}"#).as_deref(), Some("0.10.0"));
-        assert_eq!(latest_version(b"{}"), None);
+        assert_eq!(newest_version(br#"{"tag_name": "v0.10.0", "name": "0.10.0"}"#).as_deref(), Some("0.10.0"));
+        assert_eq!(newest_version(b"{}"), None);
+        let list =
+            br#"[{"tag_name": "v1.0.0-alpha.1", "prerelease": true}, {"tag_name": "v1.0.0-alpha.2", "draft": true},
+            {"tag_name": "v0.10.0"}, {"tag_name": "v0.9.0"}]"#;
+        assert_eq!(newest_version(list).as_deref(), Some("1.0.0-alpha.1"));
+        assert_eq!(newest_version(b"[]"), None);
+        assert_eq!(Channel::of("1.0.0-alpha.1"), Channel::Prerelease);
+        assert_eq!(Channel::of("0.10.0"), Channel::Stable);
         assert!(is_newer("0.10.0", "0.9.0"));
         assert!(is_newer("1.0.0", "0.99.1"));
         assert!(!is_newer("0.9.0", "0.9.0"));

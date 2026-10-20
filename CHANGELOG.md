@@ -5,6 +5,20 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.2] - 2026-10-20
+
+A pre-release: to get it, switch Check for Updates to **Pre-releases**, or download it from this release.
+
+### Added
+
+- Release channels: Check for Updates now lets you pick **Stable** or **Pre-releases**. On Pre-releases it also
+  offers pre-releases such as this one, to try what comes next; on Stable only finished releases. A pre-release you
+  installed yourself starts on Pre-releases.
+
+- **Install Agent Skill…** in the main menu installs the agent skill for Claude Code, in the standard agents folder
+  (`~/.agents/skills`, read by Codex, Cline, Zed, Warp and others), or in a folder you choose. Agent Review keeps the
+  skill up to date wherever you installed it each time it starts.
+
 ## [1.0.0-alpha.1] - 2026-10-20
 
 The first preview of product review: your agent hands you a version of its work, and you review the running product

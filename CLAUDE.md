@@ -17,9 +17,9 @@ Describe every user-facing change in `CHANGELOG.md` under `## [Unreleased]` (`Ad
 3. Add `<release version="x.y.z" date="YYYY-MM-DD"/>` at the top of `<releases>` in `data/io.github.ralphnajm.AgentReview.metainfo.xml`.
 4. `make check` verifies steps 2 and 3.
 
-A version with a pre-release suffix (`1.0.0-alpha.1`) is published as a GitHub pre-release, which the install script and Check for Updates skip; give its AppStream `<release>` `type="development"`.
+A version with a pre-release suffix (`1.0.0-alpha.1`) is published as a GitHub pre-release, which the install script skips and Check for Updates only offers on its Pre-releases channel; give its AppStream `<release>` `type="development"`.
 
-The agent skill in `skills/agent-review/SKILL.md` (installed with `npx skills add ralphnajm/agent-review`) describes the review workflow for agents: keep it in step with the MCP tools and their instructions in `src/core/mcp.rs`.
+The agent skill in `skills/agent-review/SKILL.md` (installed with `npx skills add ralphnajm/agent-review`) describes the review workflow for agents: keep it in step with the MCP tools and their instructions in `src/core/mcp.rs`. The app builds it in (`src/core/skill.rs`) to install it from the main menu and update it where installed.
 
 ## Conventions
 

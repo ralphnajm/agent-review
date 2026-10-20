@@ -119,7 +119,8 @@ sudo dnf install ./agent-review-*.rpm    # Fedora
 ```
 
 Once installed, **Check for Updates** in the main menu tells you whether a newer release is out and, if you
-want it, updates Agent Review to it however you installed it, and restarts it.
+want it, updates Agent Review to it however you installed it, and restarts it. Switch it to **Pre-releases** to
+also get pre-releases, such as the 1.0 alphas, before they are finished.
 
 ### From source
 
@@ -177,6 +178,10 @@ Claude Code, Codex, Cursor and the other agents that support
 ```sh
 npx skills add ralphnajm/agent-review        # add -g to install it for all your projects
 ```
+
+Or use **Install Agent Skill…** in the main menu, which installs it for Claude Code, in the
+standard agents folder (`~/.agents/skills`), or in a folder you choose, and keeps it up to date
+there whenever Agent Review starts.
 
 Then post a review and ask the agent to "pull my review". The server gives the agent three
 tools: `request_review` asks you to review the version it committed, `get_review` returns the

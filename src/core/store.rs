@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::hash;
 use crate::core::review::ReviewState;
 use crate::core::status::DiffMode;
+use crate::core::update::Channel;
 
 const APP_DIR: &str = "agent-review";
 const MAX_RECENT_PROJECTS: usize = 20;
@@ -44,6 +45,11 @@ pub struct Settings {
     pub show_sidebar: bool,
     pub sidebar_width: i32,
     pub window: WindowGeometry,
+    /// Skills folders, other than the usual ones, the user installed the agent skill in.
+    pub skill_folders: Vec<PathBuf>,
+    /// The releases Check for Updates offers; `None` until the user picks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<Channel>,
 }
 
 impl Default for Settings {
@@ -56,6 +62,8 @@ impl Default for Settings {
             show_sidebar: true,
             sidebar_width: 320,
             window: WindowGeometry::default(),
+            skill_folders: Vec::new(),
+            channel: None,
         }
     }
 }

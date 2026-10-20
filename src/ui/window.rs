@@ -24,9 +24,10 @@ use crate::core::feedback::{self, Feedback, FileInfo, Options};
 use crate::core::git::{Commit, Repo, Snapshot};
 use crate::core::queue::{self, PostedComment, Queue, ReviewRequest};
 use crate::core::review::{ApprovalState, Author, LineAnchor, ReviewState, ReviewedCommit};
+use crate::core::skill;
 use crate::core::status::{DiffMode, RepoStatus, StatusEntry};
 use crate::core::store::{self, ReviewOf, Settings};
-use crate::core::update;
+use crate::core::update::{self, Channel};
 use crate::core::{self as app_core, watcher};
 use crate::ui::commit_picker::CommitPicker;
 use crate::ui::file_list::{FileItem, FileList};
@@ -34,6 +35,7 @@ use crate::ui::product_view::ProductView;
 use crate::ui::project_switcher::ProjectSwitcher;
 use crate::ui::review_panel::{FileData, ReviewPanel};
 use crate::ui::reviews_dialog::ReviewsDialog;
+use crate::ui::skill_dialog::SkillDialog;
 use crate::ui::util;
 
 /// Approvals of files without a diff (e.g. type changes git can't show).
@@ -74,6 +76,7 @@ struct Widgets {
     progress: gtk::Label,
     post_count: gtk::Label,
     reviews_dialog: ReviewsDialog,
+    skill_dialog: SkillDialog,
     error_page: adw::StatusPage,
     clean_page: adw::StatusPage,
 }
@@ -194,6 +197,7 @@ impl Window {
         let this = Self(Rc::new(Inner { w, state: RefCell::new(State { settings, ..State::default() }) }));
         this.setup_actions(app);
         this.connect_signals();
+        this.update_skill();
         this.render();
         let last = this.0.state.borrow().settings.last_project.clone();
         if let Some(path) = last.filter(|p| p.is_dir()) {
@@ -276,6 +280,7 @@ impl Window {
         self.add_action("clear-review", Self::confirm_clear_review);
         self.add_action("show-history", |w| w.0.w.commits.popup());
         self.add_action("check-updates", Self::check_for_updates);
+        self.add_action("install-skill", |w| w.0.w.skill_dialog.present(&w.0.w.window));
 
         let view = gio::SimpleAction::new_stateful("view", Some(glib::VariantTy::STRING), &"code".to_variant());
         let weak = self.weak();
@@ -447,6 +452,20 @@ impl Window {
             if let Some(inner) = weak.upgrade() {
                 Self(inner).add_note(path, anchor, &body);
             }
+        });
+        let weak = self.weak();
+        w.skill_dialog.connect_install(move |dir| {
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Self(inner);
+            // Remember other folders, to keep the skill up to date there too.
+            let usual = skill::locations().iter().any(|l| l.dir == dir);
+            let mut state = this.0.state.borrow_mut();
+            if usual || state.settings.skill_folders.iter().any(|f| f == dir) {
+                return;
+            }
+            state.settings.skill_folders.push(dir.to_path_buf());
+            drop(state);
+            this.save_settings();
         });
         let weak = self.weak();
         w.product.connect_add(move |page, body| {
@@ -1437,73 +1456,116 @@ impl Window {
 
     // ----- Updates -------------------------------------------------------
 
-    /// Checks for a newer release in a dialog, which offers to install it.
+    /// Brings the agent skill up to date wherever it is installed, so agents
+    /// learn the workflow of this version.
+    fn update_skill(&self) {
+        let mut dirs: Vec<PathBuf> = skill::locations().into_iter().map(|l| l.dir).collect();
+        dirs.extend(self.0.state.borrow().settings.skill_folders.iter().cloned());
+        glib::spawn_future_local(async move {
+            let _ = gio::spawn_blocking(move || skill::update(dirs.iter().map(PathBuf::as_path))).await;
+        });
+    }
+
+    /// The releases Check for Updates offers.
+    fn channel(&self) -> Channel {
+        self.0.state.borrow().settings.channel.unwrap_or_else(|| Channel::of(config::VERSION))
+    }
+
+    /// Checks for a newer release on the user's release channel in a dialog,
+    /// which offers to install it and to switch channels.
     fn check_for_updates(&self) {
+        let stable = gtk::ToggleButton::builder().label("Stable").build();
+        let prerelease = gtk::ToggleButton::builder().label("Pre-releases").group(&stable).build();
+        prerelease.set_tooltip_text(Some("Also offer pre-releases, such as 1.0.0-alpha.2, to try what comes next"));
+        match self.channel() {
+            Channel::Stable => stable.set_active(true),
+            Channel::Prerelease => prerelease.set_active(true),
+        }
+        let channels = gtk::Box::builder().halign(gtk::Align::Center).build();
+        channels.add_css_class("linked");
+        channels.append(&stable);
+        channels.append(&prerelease);
         let spinner = gtk::Spinner::builder()
             .spinning(true)
             .width_request(24)
             .height_request(24)
             .halign(gtk::Align::Center)
             .build();
-        let dialog = adw::AlertDialog::builder().heading("Checking for Updates…").extra_child(&spinner).build();
+        let extra = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        extra.append(&channels);
+        extra.append(&spinner);
+        let dialog = adw::AlertDialog::builder().heading("Checking for Updates…").extra_child(&extra).build();
         dialog.add_response("close", "_Cancel");
         dialog.set_close_response("close");
+        // The release the dialog offers.
+        let offered: Rc<RefCell<Option<String>>> = Rc::default();
         let weak = self.weak();
+        let target = Rc::clone(&offered);
         dialog.connect_response(Some("update"), move |_, _| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).install_update();
+            if let (Some(inner), Some(version)) = (weak.upgrade(), target.borrow().clone()) {
+                Self(inner).install_update(version);
             }
         });
         dialog.present(Some(&self.0.w.window));
 
-        glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(update::check).await;
-            // Closed meanwhile.
-            if dialog.parent().is_none() {
-                return;
+        // Each check bumps this, so a slower earlier check can't overwrite a later one.
+        let generation = Rc::new(std::cell::Cell::new(0_u32));
+        let check = {
+            let (weak, dialog, spinner, offered, generation) =
+                (self.weak(), dialog.clone(), spinner.clone(), Rc::clone(&offered), Rc::clone(&generation));
+            move |channel: Channel| {
+                let Some(inner) = weak.upgrade() else { return };
+                let this = Self(inner);
+                if this.0.state.borrow().settings.channel != Some(channel) {
+                    this.0.state.borrow_mut().settings.channel = Some(channel);
+                    this.save_settings();
+                }
+                generation.set(generation.get() + 1);
+                let current = generation.get();
+                offered.replace(None);
+                if dialog.has_response("update") {
+                    dialog.remove_response("update");
+                }
+                dialog.set_heading(Some("Checking for Updates…"));
+                dialog.set_body("");
+                dialog.set_response_label("close", "_Cancel");
+                spinner.set_visible(true);
+                let (dialog, spinner, offered, generation) =
+                    (dialog.clone(), spinner.clone(), Rc::clone(&offered), Rc::clone(&generation));
+                glib::spawn_future_local(async move {
+                    let result = gio::spawn_blocking(move || update::check(channel)).await;
+                    // Closed or checked again meanwhile.
+                    if dialog.parent().is_none() || generation.get() != current {
+                        return;
+                    }
+                    spinner.set_visible(false);
+                    offered.replace(show_update_check(&dialog, result.ok(), channel));
+                });
             }
-            dialog.set_extra_child(None::<&gtk::Widget>);
-            match result {
-                Ok(Ok(None)) => {
-                    dialog.set_heading(Some("Agent Review Is Up to Date"));
-                    dialog.set_body(&format!("Version {} is the latest release.", config::VERSION));
-                    dialog.set_response_label("close", "_OK");
-                }
-                Ok(Ok(Some(latest))) => {
-                    dialog.set_heading(Some("Update Available"));
-                    dialog.set_body(&format!(
-                        "Agent Review {latest} is available. You have version {}.\n\nUpdating installs it the \
-                         way this version was installed, which may ask for your password, then restarts Agent \
-                         Review.",
-                        config::VERSION
-                    ));
-                    dialog.set_response_label("close", "_Not Now");
-                    dialog.add_response("update", "_Update");
-                    dialog.set_response_appearance("update", adw::ResponseAppearance::Suggested);
-                    dialog.set_default_response(Some("update"));
-                }
-                Ok(Err(err)) => {
-                    dialog.set_heading(Some("Could Not Check for Updates"));
-                    dialog.set_body(&format!("{err:#}"));
-                    dialog.set_response_label("close", "_Close");
-                }
-                Err(_) => {
-                    dialog.set_heading(Some("Could Not Check for Updates"));
-                    dialog.set_body("The check failed unexpectedly.");
-                    dialog.set_response_label("close", "_Close");
-                }
+        };
+        let on_stable = check.clone();
+        stable.connect_toggled(move |button| {
+            if button.is_active() {
+                on_stable(Channel::Stable);
             }
         });
+        let on_prerelease = check.clone();
+        prerelease.connect_toggled(move |button| {
+            if button.is_active() {
+                on_prerelease(Channel::Prerelease);
+            }
+        });
+        check(self.channel());
     }
 
     /// Runs the update script; when it updated, quits so the script can start the new version.
-    fn install_update(&self) {
+    fn install_update(&self, version: String) {
         self.set_action_enabled("check-updates", false);
         let progress = adw::Toast::builder().title("Updating Agent Review…").timeout(0).build();
         self.0.w.toasts.add_toast(progress.clone());
         let weak = self.weak();
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(update::run).await;
+            let result = gio::spawn_blocking(move || update::run(&version)).await;
             progress.dismiss();
             let Some(inner) = weak.upgrade() else { return };
             let this = Self(inner);
@@ -1519,6 +1581,52 @@ impl Window {
                 Err(_) => this.toast("The update failed unexpectedly"),
             }
         });
+    }
+}
+
+/// Shows how an update check on `channel` went in its dialog; returns the
+/// release it offers to install.
+fn show_update_check(
+    dialog: &adw::AlertDialog,
+    result: Option<anyhow::Result<Option<String>>>,
+    channel: Channel,
+) -> Option<String> {
+    dialog.set_response_label("close", "_Close");
+    match result {
+        Some(Ok(None)) => {
+            dialog.set_heading(Some("Agent Review Is Up to Date"));
+            let latest = match channel {
+                Channel::Stable => "the latest release",
+                Channel::Prerelease => "the latest release, pre-releases included",
+            };
+            dialog.set_body(&format!("Version {} is {latest}.", config::VERSION));
+            dialog.set_response_label("close", "_OK");
+            None
+        }
+        Some(Ok(Some(latest))) => {
+            dialog.set_heading(Some("Update Available"));
+            let kind = if Channel::of(&latest) == Channel::Prerelease { "pre-release " } else { "" };
+            dialog.set_body(&format!(
+                "Agent Review {kind}{latest} is available. You have version {}.\n\nUpdating installs it the way \
+                 this version was installed, which may ask for your password, then restarts Agent Review.",
+                config::VERSION
+            ));
+            dialog.set_response_label("close", "_Not Now");
+            dialog.add_response("update", "_Update");
+            dialog.set_response_appearance("update", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("update"));
+            Some(latest)
+        }
+        Some(Err(err)) => {
+            dialog.set_heading(Some("Could Not Check for Updates"));
+            dialog.set_body(&format!("{err:#}"));
+            None
+        }
+        None => {
+            dialog.set_heading(Some("Could Not Check for Updates"));
+            dialog.set_body("The check failed unexpectedly.");
+            None
+        }
     }
 }
 
@@ -1620,6 +1728,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
     section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));
+    section.append(Some("Install Agent Skill…"), Some("win.install-skill"));
     section.append(Some("Check for Updates"), Some("win.check-updates"));
     section.append(Some("About Agent Review"), Some("app.about"));
     main_menu.append_section(None, &section);
@@ -1833,6 +1942,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         progress,
         post_count,
         reviews_dialog: ReviewsDialog::new(),
+        skill_dialog: SkillDialog::new(),
         error_page,
         clean_page,
     }

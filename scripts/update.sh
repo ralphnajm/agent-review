@@ -4,12 +4,14 @@
 # app downloads this script from the main branch and runs it when you accept
 # the update Check for Updates offers:
 #
-#   update.sh VERSION EXE PID
+#   update.sh VERSION EXE PID [TARGET]
 #
-# VERSION is the running version, EXE the path of its binary, PID its process.
-# Exits with 0 when it updated (the app then quits and comes back as the new
-# version), 3 when VERSION is already the latest (or newer), and otherwise
-# fails with the reason as the last line on standard error.
+# VERSION is the running version, EXE the path of its binary, PID its process,
+# and TARGET the release to update to, as Check for Updates found it on the
+# user's release channel; without it (versions before 1.0.0-alpha.2), the
+# latest stable release. Exits with 0 when it updated (the app then quits and
+# comes back as the new version), 3 when VERSION is already that release (or
+# newer), and otherwise fails with the reason as the last line on standard error.
 #
 #   .deb or .rpm package   installs the release's package with apt or dnf
 #   make install           builds the release's source and installs it to the same prefix
@@ -40,10 +42,10 @@ as_root() {
     }
 }
 
-# Downloads the latest release's .deb or .rpm into $dir and prints its path.
+# Downloads the release's .deb or .rpm into $dir and prints its path.
 download_package() {
     url=$(echo "$release" | sed -n "s/.*\"browser_download_url\": *\"\([^\"]*\.$1\)\".*/\1/p" | head -n 1)
-    [ -n "$url" ] || fail "The latest release has no .$1 package"
+    [ -n "$url" ] || fail "Release $latest has no .$1 package"
     package="$dir/${url##*/}"
     curl -fsSL -o "$package" "$url"
     # Readable by apt's unprivileged downloader.
@@ -53,8 +55,8 @@ download_package() {
 
 # Everything runs from here, so a download cut short runs nothing.
 main() {
-    [ $# -eq 3 ] || fail "Usage: update.sh VERSION EXE PID"
-    version=$1 exe=$2 pid=$3
+    [ $# -eq 3 ] || [ $# -eq 4 ] || fail "Usage: update.sh VERSION EXE PID [TARGET]"
+    version=$1 exe=$2 pid=$3 target=${4:-}
     command -v curl > /dev/null || fail "curl is needed to download the update"
 
     case $exe in
@@ -63,7 +65,12 @@ main() {
             ;;
     esac
 
-    release=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")
+    if [ -n "$target" ]; then
+        release=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/tags/v$target") ||
+            fail "Could not find release $target"
+    else
+        release=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")
+    fi
     latest=$(echo "$release" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
     [ -n "$latest" ] || fail "Could not find the latest release"
     # Also true for a build newer than the latest release. Pre-releases
