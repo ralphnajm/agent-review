@@ -1,6 +1,6 @@
 # Agent Review
 
-Native GTK 4 / libadwaita app (Rust) for reviewing uncommitted changes made by coding agents. See README.md.
+Native GTK 4 / libadwaita app (Rust) for reviewing the versions coding agents ask the user to review: a commit and the product running from it. See README.md.
 
 ## Commands
 

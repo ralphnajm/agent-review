@@ -15,9 +15,9 @@ use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 use sourceview5::prelude::*;
 
+use crate::core::changes::ChangeKind;
 use crate::core::diff::FileDiff;
 use crate::core::review::{ApprovalState, Author, LineAnchor, Note};
-use crate::core::status::ChangeKind;
 use crate::ui::diff_view::{DiffView, Find};
 use crate::ui::scroller::Scroller;
 use crate::ui::util;

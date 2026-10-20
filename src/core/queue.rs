@@ -29,6 +29,9 @@ pub struct PostedComment {
     /// For a comment on the running product, the address of the page it is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
+    /// The screenshot of the page the user drew on, as a PNG file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<String>,
     pub body: String,
 }
 
@@ -254,7 +257,16 @@ mod tests {
 
     fn comment(note: u64, body: &str) -> PostedComment {
         let anchor = LineAnchor { side: Side::New, line: 3, end_line: None, text: "+x".into() };
-        PostedComment { id: 0, note_id: note, path: "a.rs".into(), anchor: Some(anchor), page: None, body: body.into() }
+        let path = "a.rs".into();
+        PostedComment {
+            id: 0,
+            note_id: note,
+            path,
+            anchor: Some(anchor),
+            page: None,
+            screenshot: None,
+            body: body.into(),
+        }
     }
 
     #[test]

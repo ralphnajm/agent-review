@@ -1,6 +1,6 @@
 [package]
 name = "agent-review"
-version = "1.0.0-alpha.2"
+version = "1.0.0-alpha.3"
 edition = "2024"
 rust-version = "1.99"
 description = "Review the changes coding agents make and hand your feedback back to them"
@@ -17,6 +17,7 @@ anyhow = "1.0.104"
 async-channel = "2.5.0"
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
 notify = { version = "8.2.0", default-features = false }
+pangocairo = "0.22.9"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sourceview5 = { version = "0.11.2", features = ["v5_12"] }
@@ -60,7 +61,7 @@ maintainer = "Ralph Najem <me@ralphnajem.com>"
 section = "devel"
 priority = "optional"
 depends = "$auto, git"
-extended-description = "A native GTK app for reviewing the uncommitted changes coding agents make: browse staged and unstaged changes per project, comment on lines and files, mark files as reviewed, and post the feedback for your agent to pull or copy it to paste."
+extended-description = "A native GTK app for reviewing the versions your coding agent asks you to review: click through the running product, draw on screenshots of it, comment on the code changes, and post the feedback for your agent to pull or copy it to paste."
 assets = [
     ["target/release/agent-review", "usr/bin/", "755"],
     ["data/io.github.ralphnajm.AgentReview.desktop", "usr/share/applications/", "644"],

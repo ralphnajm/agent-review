@@ -2,8 +2,8 @@
 
 use crate::core::hash::Fnv64;
 
-/// Untracked files larger than this are not read at all.
-pub const MAX_UNTRACKED_BYTES: u64 = 4 * 1024 * 1024;
+/// Files larger than this are not read for their unchanged lines.
+pub const MAX_TEXT_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -58,8 +58,6 @@ pub struct FileDiff {
     pub is_new: bool,
     pub is_deleted: bool,
     pub is_binary: bool,
-    /// The file was too large to be read (untracked files only).
-    pub is_oversized: bool,
     pub old_mode: Option<String>,
     pub new_mode: Option<String>,
     pub hunks: Vec<Hunk>,
@@ -94,7 +92,8 @@ impl FileDiff {
             hasher.write(part.unwrap_or("-").as_bytes());
             hasher.write(b"\0");
         }
-        hasher.write(&[u8::from(self.is_binary), u8::from(self.is_oversized)]);
+        // The second byte stood for a flag since removed: kept so earlier approvals still match.
+        hasher.write(&[u8::from(self.is_binary), 0]);
         for hunk in &self.hunks {
             for line in &hunk.lines {
                 hasher.write(match line.kind {
@@ -276,7 +275,8 @@ pub fn parse(text: &str) -> Vec<FileDiff> {
     files
 }
 
-/// Builds a diff showing the whole of a new, untracked file as added.
+/// Builds a diff showing the whole of a new file as added.
+#[cfg(test)]
 pub fn untracked(path: &str, content: &[u8]) -> FileDiff {
     let mut diff = FileDiff { new_path: Some(path.to_owned()), is_new: true, ..FileDiff::default() };
     let sample = &content[..content.len().min(8000)];
@@ -301,11 +301,6 @@ pub fn untracked(path: &str, content: &[u8]) -> FileDiff {
         .collect();
     diff.hunks.push(Hunk { header: format!("@@ -0,0 +1,{} @@", lines.len()), lines });
     finish(diff)
-}
-
-/// Placeholder for an untracked file that is too large to read.
-pub fn oversized(path: &str) -> FileDiff {
-    FileDiff { new_path: Some(path.to_owned()), is_new: true, is_oversized: true, ..FileDiff::default() }
 }
 
 fn next(counter: &mut u32) -> u32 {

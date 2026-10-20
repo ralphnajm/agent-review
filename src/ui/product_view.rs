@@ -1,5 +1,7 @@
 //! The running product of a version under review, in an embedded browser,
-//! with the user's comments on it in a panel beside the page.
+//! with the user's comments on it in a panel beside the page. Commenting
+//! freezes the page into a screenshot to draw on (see [`Whiteboard`]), which
+//! goes to the agent with the comment.
 //!
 //! The web view is only created the first time a product is opened, since
 //! the web engine's processes cost far more than the rest of the app. Its
@@ -7,6 +9,7 @@
 //! review last.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
@@ -17,8 +20,12 @@ use crate::core::review::{Author, Note};
 use crate::core::store;
 use crate::ui::diff_view::{self, Composer};
 use crate::ui::util;
+use crate::ui::whiteboard::{self, Tool, Whiteboard};
 
-type AddCallback = Box<dyn Fn(String, String)>;
+/// Screenshots wider than this are scaled down, to keep them light for the agent.
+const MAX_SCREENSHOT_WIDTH: i32 = 1600;
+
+type AddCallback = Box<dyn Fn(String, String, Option<PathBuf>)>;
 type DeleteCallback = Box<dyn Fn(u64)>;
 
 #[derive(Clone)]
@@ -31,8 +38,11 @@ struct Inner {
     address: gtk::Label,
     comments: gtk::ToggleButton,
     count: gtk::Label,
+    /// The browser's bar, or the whiteboard's tools.
+    bars: gtk::Stack,
     stack: gtk::Stack,
     page: gtk::Box,
+    whiteboard: Whiteboard,
     error_page: adw::StatusPage,
     view: RefCell<Option<webkit6::WebView>>,
     /// The address that failed to load, for Retry.
@@ -72,14 +82,21 @@ impl ProductView {
         comments.add_css_class("comment-button");
 
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        bar.add_css_class("product-bar");
         for widget in
             [back.upcast_ref::<gtk::Widget>(), forward.upcast_ref(), reload.upcast_ref(), address.upcast_ref()]
         {
             bar.append(widget);
         }
-        bar.append(&comments);
         bar.append(&open);
+        let whiteboard = Whiteboard::new();
+        let (tools, undo) = build_tools(&whiteboard);
+        let bars = gtk::Stack::builder().hhomogeneous(true).hexpand(true).build();
+        bars.add_named(&bar, Some("browse"));
+        bars.add_named(&tools, Some("annotate"));
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        top.add_css_class("product-bar");
+        top.append(&bars);
+        top.append(&comments);
 
         let page = gtk::Box::builder().hexpand(true).vexpand(true).build();
         let retry = gtk::Button::builder().label("Retry").halign(gtk::Align::Center).build();
@@ -92,10 +109,13 @@ impl ProductView {
         let stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
         stack.add_named(&page, Some("page"));
         stack.add_named(&error_page, Some("error"));
+        stack.add_named(whiteboard.widget(), Some("whiteboard"));
 
         let heading = util::label("Comments on the Product", &["heading"]);
-        let empty =
-            util::label("Comment on what you see: it reaches your agent with the code comments.", &["dim-label"]);
+        let empty = util::label(
+            "Draw on the screenshot and say what you want changed: it reaches your agent with the code comments.",
+            &["dim-label"],
+        );
         empty.set_wrap(true);
         let cards = gtk::Box::new(gtk::Orientation::Vertical, 8);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -128,7 +148,7 @@ impl ProductView {
         body.append(&stack);
         body.append(&panel);
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.append(&bar);
+        root.append(&top);
         root.append(&body);
 
         let this = Self(Rc::new(Inner {
@@ -138,8 +158,10 @@ impl ProductView {
             address,
             comments,
             count,
+            bars,
             stack,
             page,
+            whiteboard,
             error_page,
             view: RefCell::default(),
             failed: RefCell::default(),
@@ -185,7 +207,19 @@ impl ProductView {
         let weak = this.weak();
         this.0.comments.connect_toggled(move |button| {
             if let Some(inner) = weak.upgrade() {
-                inner.panel.set_reveal_child(button.is_active());
+                if button.is_active() { Self(inner).annotate() } else { Self(inner).leave_annotation() }
+            }
+        });
+        let weak = this.weak();
+        undo.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                inner.whiteboard.undo();
+            }
+        });
+        let weak = this.weak();
+        this.0.whiteboard.connect_change(move || {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).update_submit();
             }
         });
         this.connect_composer();
@@ -200,8 +234,9 @@ impl ProductView {
         Rc::downgrade(&self.0)
     }
 
-    /// Called with the address of the page and the comment's text.
-    pub fn connect_add(&self, callback: impl Fn(String, String) + 'static) {
+    /// Called with the address of the page, the comment's text, and the
+    /// screenshot drawn on, if any.
+    pub fn connect_add(&self, callback: impl Fn(String, String, Option<PathBuf>) + 'static) {
         self.0.on_add.replace(Some(Box::new(callback)));
     }
 
@@ -216,6 +251,7 @@ impl ProductView {
 
     /// Opens `url`, afresh: the product may have changed since it was last shown.
     pub fn open(&self, url: &str) {
+        self.0.comments.set_active(false);
         self.view().load_uri(url);
         self.0.stack.set_visible_child_name("page");
     }
@@ -327,10 +363,85 @@ impl ProductView {
         self.0.count.set_visible(!notes.is_empty());
     }
 
-    /// Shows the comments with the composer ready for a new one.
+    /// Starts a comment: on a screenshot of the page to draw on, when there is a page.
     pub fn open_composer(&self) {
         self.0.comments.set_active(true);
+    }
+
+    fn annotating(&self) -> bool {
+        self.0.stack.visible_child_name().as_deref() == Some("whiteboard")
+    }
+
+    /// Freezes the page into a screenshot on the whiteboard, with the
+    /// comments and the composer beside it.
+    fn annotate(&self) {
         self.0.composer.text.grab_focus();
+        let view = self.0.view.borrow().clone();
+        let view = view.filter(|_| self.0.stack.visible_child_name().as_deref() == Some("page"));
+        // Open the comments first, so the page takes its new width before the screenshot.
+        let panel = &self.0.panel;
+        panel.set_reveal_child(true);
+        let Some(view) = view else { return };
+        if panel.is_child_revealed() {
+            self.screenshot(view);
+            return;
+        }
+        let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+        let (weak, once) = (self.weak(), Rc::clone(&handler));
+        let id = panel.connect_child_revealed_notify(move |panel| {
+            if let Some(id) = once.take() {
+                panel.disconnect(id);
+            }
+            // Give the page a moment to lay itself out at its new width.
+            let (weak, view) = (weak.clone(), view.clone());
+            glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                if let Some(inner) = weak.upgrade() {
+                    Self(inner).screenshot(view);
+                }
+            });
+        });
+        handler.replace(Some(id));
+    }
+
+    /// Freezes what `view` shows onto the whiteboard.
+    fn screenshot(&self, view: webkit6::WebView) {
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            let snapshot = view.snapshot_future(webkit6::SnapshotRegion::Visible, webkit6::SnapshotOptions::NONE).await;
+            let Some(inner) = weak.upgrade() else { return };
+            // Closed meanwhile.
+            if !inner.comments.is_active() {
+                return;
+            }
+            match snapshot
+                .map_err(|e| e.to_string())
+                .and_then(|t| inner.whiteboard.set_image(&t).map_err(|e| e.to_string()))
+            {
+                Ok(()) => {
+                    inner.stack.set_visible_child_name("whiteboard");
+                    inner.bars.set_visible_child_name("annotate");
+                    Self(inner).update_submit();
+                }
+                Err(err) => eprintln!("agent-review: could not take a screenshot: {err}"),
+            }
+        });
+    }
+
+    /// Back to the live page.
+    fn leave_annotation(&self) {
+        self.0.panel.set_reveal_child(false);
+        self.0.composer.text.buffer().set_text("");
+        if self.annotating() {
+            self.0.stack.set_visible_child_name("page");
+        }
+        self.0.bars.set_visible_child_name("browse");
+    }
+
+    /// A comment needs words, or a drawing on the screenshot.
+    fn update_submit(&self) {
+        let buffer = self.0.composer.text.buffer();
+        let text = !buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim().is_empty();
+        self.0.composer.submit.set_sensitive(text || (self.annotating() && self.0.whiteboard.has_drawing()));
     }
 
     fn build_card(&self, note: &Note, now: i64) -> gtk::Box {
@@ -373,11 +484,33 @@ impl ProductView {
         header.append(&delete);
         card.append(&header);
 
-        let body = util::label(&note.body, &["comment-body"]);
-        body.set_wrap(true);
-        body.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        body.set_selectable(true);
-        card.append(&body);
+        if let Some(path) = note.screenshot.as_deref().map(PathBuf::from).filter(|p| p.is_file()) {
+            let picture = gtk::Picture::for_filename(&path);
+            picture.set_content_fit(gtk::ContentFit::Contain);
+            picture.set_can_shrink(true);
+            picture.set_height_request(150);
+            picture.add_css_class("comment-screenshot");
+            picture.set_cursor_from_name(Some("pointer"));
+            picture.set_tooltip_text(Some("Open the Screenshot"));
+            let click = gtk::GestureClick::new();
+            click.connect_released(move |gesture, _, _, _| {
+                let window = gesture.widget().and_then(|w| w.root()).and_downcast::<gtk::Window>();
+                gtk::FileLauncher::new(Some(&gio::File::for_path(&path))).launch(
+                    window.as_ref(),
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+            });
+            picture.add_controller(click);
+            card.append(&picture);
+        }
+        if !note.body.is_empty() {
+            let body = util::label(&note.body, &["comment-body"]);
+            body.set_wrap(true);
+            body.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+            body.set_selectable(true);
+            card.append(&body);
+        }
         card
     }
 
@@ -406,7 +539,6 @@ impl ProductView {
         let weak = self.weak();
         composer.cancel.connect_clicked(move |_| {
             if let Some(inner) = weak.upgrade() {
-                inner.composer.text.buffer().set_text("");
                 inner.comments.set_active(false);
             }
         });
@@ -416,22 +548,107 @@ impl ProductView {
                 Self(inner).submit();
             }
         });
-        let submit = composer.submit.clone();
-        composer.text.buffer().connect_changed(move |buffer| {
-            submit.set_sensitive(!buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim().is_empty());
+        let weak = self.weak();
+        composer.text.buffer().connect_changed(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).update_submit();
+            }
         });
         composer.submit.set_sensitive(false);
     }
 
     fn submit(&self) {
         let buffer = self.0.composer.text.buffer();
-        let body = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
-        let Some(page) = self.current_uri().filter(|_| !body.trim().is_empty()) else { return };
-        buffer.set_text("");
-        if let Some(callback) = self.0.on_add.borrow().as_ref() {
-            callback(page, body);
+        let mut body = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim().to_owned();
+        let drawing = self.annotating() && self.0.whiteboard.has_drawing();
+        let Some(page) = self.current_uri().filter(|_| !body.is_empty() || drawing) else { return };
+        let mut screenshot = None;
+        if self.annotating() {
+            // The notes written on the screenshot, as text too.
+            let texts = self.0.whiteboard.texts();
+            if !texts.is_empty() {
+                if !body.is_empty() {
+                    body.push_str("\n\n");
+                }
+                body.push_str("Written on the screenshot:");
+                for text in texts {
+                    body.push_str("\n- ");
+                    body.push_str(&text);
+                }
+            }
+            let path = store::screenshot_file(crate::core::now_millis());
+            match self.0.whiteboard.export(&path, MAX_SCREENSHOT_WIDTH) {
+                Ok(()) => screenshot = Some(path),
+                Err(err) => eprintln!("agent-review: could not save the screenshot: {err}"),
+            }
         }
+        if let Some(callback) = self.0.on_add.borrow().as_ref() {
+            callback(page, body, screenshot);
+        }
+        self.0.comments.set_active(false);
     }
+}
+
+/// The whiteboard's tools, its colours and Undo, in a bar; returns the bar and Undo.
+fn build_tools(whiteboard: &Whiteboard) -> (gtk::Box, gtk::Button) {
+    let tools = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    tools.add_css_class("linked");
+    let mut first: Option<gtk::ToggleButton> = None;
+    for (tool, label, tooltip) in [
+        (Tool::Marker, "Marker", "Draw freely"),
+        (Tool::Arrow, "Arrow", "Point at something"),
+        (Tool::Box, "Box", "Frame an area"),
+        (Tool::Sticky, "Sticky Note", "Click where the note goes"),
+        (Tool::Text, "Text", "Click where the text goes"),
+    ] {
+        let button = gtk::ToggleButton::builder().label(label).tooltip_text(tooltip).build();
+        button.set_group(first.as_ref());
+        let board = whiteboard.clone();
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                board.set_tool(tool);
+            }
+        });
+        tools.append(&button);
+        first.get_or_insert(button);
+    }
+    if let Some(first) = first {
+        first.set_active(true);
+    }
+
+    let colors = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let mut first: Option<gtk::ToggleButton> = None;
+    for (name, color) in whiteboard::COLORS {
+        let button = gtk::ToggleButton::builder().tooltip_text(name).valign(gtk::Align::Center).build();
+        button.add_css_class("swatch");
+        button.add_css_class(&format!("swatch-{}", name.to_lowercase()));
+        button.set_group(first.as_ref());
+        let board = whiteboard.clone();
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                board.set_color(color);
+            }
+        });
+        colors.append(&button);
+        first.get_or_insert(button);
+    }
+    if let Some(first) = first {
+        first.set_active(true);
+    }
+
+    let undo = gtk::Button::builder().icon_name("edit-undo-symbolic").tooltip_text("Undo").build();
+    undo.add_css_class("flat");
+    undo.add_css_class("icon-button");
+    let hint = util::label("Draw on the screenshot, then comment beside it", &["dim-label", "caption"]);
+    hint.set_hexpand(true);
+    hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    hint.set_xalign(1.0);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    bar.append(&tools);
+    bar.append(&colors);
+    bar.append(&undo);
+    bar.append(&hint);
+    (bar, undo)
 }
 
 /// A page's address without its scheme and host, which are the same

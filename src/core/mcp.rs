@@ -23,11 +23,14 @@ use crate::core::review::ReviewedCommit;
 /// Protocol revisions the server can speak; the newest is offered by default.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
-const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews your changes, \
-uncommitted or committed, and leaves comments on them. When you finish a set of changes for the user to review, commit \
-them as a draft commit that is not pushed, make sure the product is running if it has one, and call request_review. \
-When the user asks you to pull, fetch or check their review, call get_review, address each comment, then call \
-resolve_comments with the ids of the comments you addressed. When you address a review of a version you requested, \
+const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews versions: commits you \
+ask them to review, with the running product beside the code, and leaves comments on them, screenshots of the \
+product included. When you finish a set of changes for the user to review, commit them as a draft commit that is not \
+pushed, make sure the product is running if it has one, and call request_review. To let the user review someone \
+else's work (a commit, a branch, a pull request), check it out, run it, and call request_review with a title saying \
+whose it is and a base it is compared to. When the user asks you to pull, fetch or check their review, call \
+get_review, then do what they ask with it: address each comment and call resolve_comments with the ids of those you \
+addressed, or pass the review on, for example to the pull request. When you address a review of your own version, \
 amend the draft commit or add commits on top of it, and call request_review again.";
 
 /// Serves requests from stdin until it closes.
@@ -84,14 +87,19 @@ impl Server {
     fn call_tool(&self, params: &Value) -> Value {
         let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
         let outcome = match params.get("name").and_then(Value::as_str) {
-            Some("request_review") => self.request_review(&arguments),
-            Some("get_review") => self.get_review(&arguments),
-            Some("resolve_comments") => self.resolve_comments(&arguments),
+            Some("request_review") => self.request_review(&arguments).map(|text| vec![text_content(&text)]),
+            Some("get_review") => self.get_review(&arguments).map(|(text, screenshots)| {
+                // The screenshots follow the text, in the order it names them.
+                std::iter::once(text_content(&text))
+                    .chain(screenshots.iter().filter_map(|s| image_content(s)))
+                    .collect()
+            }),
+            Some("resolve_comments") => self.resolve_comments(&arguments).map(|text| vec![text_content(&text)]),
             other => Err(anyhow::anyhow!("Unknown tool {}", other.unwrap_or("(none)"))),
         };
         match outcome {
-            Ok(text) => json!({ "content": [{ "type": "text", "text": text }] }),
-            Err(err) => json!({ "content": [{ "type": "text", "text": format!("{err:#}") }], "isError": true }),
+            Ok(content) => json!({ "content": content }),
+            Err(err) => json!({ "content": [text_content(&format!("{err:#}"))], "isError": true }),
         }
     }
 
@@ -110,17 +118,20 @@ impl Server {
         let commit = repo
             .head()
             .context("There is nothing to review yet. Commit your changes, then request the review again")?;
+        // A branch's tip as the base would also show what it gained since: compare
+        // to where the histories meet instead.
         let base = match arguments.get("base").and_then(Value::as_str) {
-            Some(base) => repo.resolve(base)?,
+            Some(base) => repo.merge_base(&repo.resolve(base)?, &commit)?,
             None => repo.review_base(&commit),
         };
         let info = repo.commit(&commit)?;
-        let url = arguments.get("url").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty());
+        let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
+        let url = text("url");
         let request = ReviewRequest {
             id: 0,
             requested_at: crate::core::now(),
             commit,
-            subject: info.subject,
+            subject: text("title").map_or(info.subject, str::to_owned),
             body: info.body,
             base,
             url: url.map(str::to_owned),
@@ -142,7 +153,7 @@ impl Server {
              get_review. To address their comments, amend the draft commit or add commits on top of it, then call \
              request_review again.",
         );
-        if repo.status().is_ok_and(|s| !s.entries.is_empty()) {
+        if repo.has_uncommitted_changes().unwrap_or(false) {
             text.push_str(
                 "\n\nThere are also uncommitted changes, which this version does not include. If they belong to it, \
                  commit them and call request_review again.",
@@ -151,20 +162,23 @@ impl Server {
         Ok(text)
     }
 
-    fn get_review(&self, arguments: &Value) -> Result<String> {
+    /// The open comments as a Markdown prompt, and the screenshots they name.
+    fn get_review(&self, arguments: &Value) -> Result<(String, Vec<String>)> {
         let (root, queue) = self.queue(arguments)?;
         let entries = queue.load();
         let open: Vec<(Option<&ReviewedCommit>, &PostedComment)> =
             entries.iter().flat_map(|e| e.open().map(|c| (e.review.commit.as_ref(), c))).collect();
         if open.is_empty() {
-            return Ok(format!(
+            let text = format!(
                 "There are no open review comments for {}. The user has not posted any, or they are all resolved.",
                 root.display()
-            ));
+            );
+            return Ok((text, Vec::new()));
         }
         let pulled: Vec<u64> = entries.iter().filter(|e| e.open().next().is_some()).map(|e| e.review.id).collect();
         queue.mark_pulled(&pulled, crate::core::now()).context("Could not record that the review was pulled")?;
-        Ok(render(&root, &open))
+        let screenshots = open.iter().filter_map(|(_, c)| c.screenshot.clone()).collect();
+        Ok((render(&root, &open), screenshots))
     }
 
     fn resolve_comments(&self, arguments: &Value) -> Result<String> {
@@ -244,7 +258,8 @@ fn render(root: &Path, comments: &[(Option<&ReviewedCommit>, &PostedComment)]) -
             for comment in comments {
                 let tag = format!(" (id {})", comment.id);
                 if path.is_empty() {
-                    feedback::write_page_comment(&mut text, comment.page.as_deref(), &comment.body, &tag);
+                    let screenshot = comment.screenshot.as_deref();
+                    feedback::write_page_comment(&mut text, comment.page.as_deref(), screenshot, &comment.body, &tag);
                 } else {
                     feedback::write_comment(&mut text, comment.anchor.as_ref(), &comment.body, &tag);
                 }
@@ -253,6 +268,32 @@ fn render(root: &Path, comments: &[(Option<&ReviewedCommit>, &PostedComment)]) -
         }
     }
     text.trim_end().to_owned() + "\n"
+}
+
+fn text_content(text: &str) -> Value {
+    json!({ "type": "text", "text": text })
+}
+
+/// The PNG at `path` as image content, if it can be read.
+fn image_content(path: &str) -> Option<Value> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(json!({ "type": "image", "data": base64(&bytes), "mimeType": "image/png" }))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0_u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 fn id_list(ids: &[u64]) -> String {
@@ -281,13 +322,18 @@ fn tools() -> Value {
         {
             "name": "request_review",
             "title": "Request a review",
-            "description": "Ask the user to review the work you committed: the version at HEAD, and the running \
-                product if there is one. Commit your changes first, as draft commits that are not pushed. Agent \
-                Review shows the user the changes since the branch left its upstream, or since the parent of HEAD \
-                when it has none.",
+            "description": "Ask the user to review the version at HEAD, and the running product if there is one: \
+                work you committed (as draft commits that are not pushed), or someone else's commit, branch or pull \
+                request you checked out. Agent Review shows the user the changes since the branch left its \
+                upstream, or since the parent of HEAD when it has none, unless you pass a base.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "What the user reviews, when the commit's subject doesn't say: for \
+                            someone else's work, whose and what it is, such as \"PR #42 by John: Add pricing\".",
+                    },
                     "url": {
                         "type": "string",
                         "description": "Where the user can open the running product, such as \
@@ -296,8 +342,9 @@ fn tools() -> Value {
                     },
                     "base": {
                         "type": "string",
-                        "description": "The commit to compare the version to, when the work spans commits the \
-                            default does not cover: a commit id or a revision such as HEAD~3.",
+                        "description": "What to compare the version to, when the default does not cover the work: \
+                            a commit or revision such as HEAD~3, or for a branch or pull request, the branch it \
+                            goes into, such as origin/main. The version is compared to where their histories meet.",
                     },
                     "project": project,
                 },
@@ -307,9 +354,10 @@ fn tools() -> Value {
         {
             "name": "get_review",
             "title": "Get review comments",
-            "description": "Get the open comments the user posted in Agent Review on the changes of this \
-                repository, uncommitted ones or commits, with the lines each one is about. Address each comment, then call \
-                resolve_comments with the ids of the comments you addressed.",
+            "description": "Get the open comments the user posted in Agent Review on the versions of this \
+                repository, with the lines or product pages each one is about, and screenshots of the product. \
+                Address each comment and call resolve_comments with the ids of the comments you addressed, or do \
+                what the user asked with the review.",
             "inputSchema": { "type": "object", "properties": { "project": project } },
             "annotations": { "readOnlyHint": false, "idempotentHint": true },
         },
@@ -356,7 +404,7 @@ mod tests {
     }
 
     fn comment(note_id: u64, path: &str, anchor: Option<LineAnchor>, body: &str) -> PostedComment {
-        PostedComment { id: 0, note_id, path: path.into(), anchor, page: None, body: body.into() }
+        PostedComment { id: 0, note_id, path: path.into(), anchor, page: None, screenshot: None, body: body.into() }
     }
 
     fn call(server: &Server, name: &str, arguments: &Value) -> (String, bool) {
@@ -478,6 +526,9 @@ mod tests {
         assert_eq!(queue.requests()[2].base, start.commit);
         let (text, error) = call(&server, "request_review", &json!({ "base": "nope" }));
         assert!(error && text.contains("nope is not a commit"), "{text}");
+        let (text, error) = call(&server, "request_review", &json!({ "title": "PR #42 by John: Add a page" }));
+        assert!(!error && text.contains("(PR #42 by John: Add a page)"), "{text}");
+        assert_eq!(queue.requests()[3].subject, "PR #42 by John: Add a page");
     }
 
     #[test]
@@ -485,12 +536,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let server = server(dir.path());
         let queue = Queue::at(dir.path().to_path_buf());
-        let commit = ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add the parser".into(), base: None };
+        let commit = ReviewedCommit {
+            id: "0123456789abcdef".into(),
+            subject: "Add the parser".into(),
+            base: None,
+            request: None,
+        };
         queue.post(Some(commit), [comment(1, "src/parse.rs", None, "Handle errors.")], 1).unwrap();
         queue.post(None, [comment(2, "README.md", None, "Document it.")], 2).unwrap();
-        let version =
-            ReviewedCommit { id: "fedcba9876543210".into(), subject: "Add a page".into(), base: Some("0".into()) };
-        let on_page = PostedComment { page: Some("http://localhost:5173/".into()), ..comment(4, "", None, "Bigger.") };
+        let version = ReviewedCommit {
+            id: "fedcba9876543210".into(),
+            subject: "Add a page".into(),
+            base: Some("0".into()),
+            request: None,
+        };
+        let shot = dir.path().join("shot.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let on_page = PostedComment {
+            page: Some("http://localhost:5173/".into()),
+            screenshot: Some(shot.display().to_string()),
+            ..comment(4, "", None, "Bigger.")
+        };
         queue.post(Some(version), [comment(3, "page.html", None, "Center it."), on_page], 3).unwrap();
 
         let (text, _) = call(&server, "get_review", &json!({}));
@@ -499,13 +565,32 @@ mod tests {
             .find("## Commit 0123456789abcdef (Add the parser)\n\n### `src/parse.rs`\n\n- **File** (id 1)")
             .unwrap();
         assert!(uncommitted < commit, "{text}");
-        assert!(
-            text.contains(
-                "## Version fedcba9876543210 (Add a page)\n\n### The running product\n\n- **Page** (id 4): \
-                 `http://localhost:5173/`\n  Bigger.\n\n### `page.html`"
-            ),
-            "{text}"
+        let shown = format!(
+            "## Version fedcba9876543210 (Add a page)\n\n### The running product\n\n- **Page** (id 4): \
+             `http://localhost:5173/`\n  Screenshot, drawn on: `{}`\n  Bigger.\n\n### `page.html`",
+            shot.display()
         );
+        assert!(text.contains(&shown), "{text}");
         assert!(text.starts_with("The user reviewed changes in /repo"));
+
+        // The screenshot follows the text as an image.
+        let request = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "get_review", "arguments": {} },
+        });
+        let response: Value = serde_json::from_str(&server.handle(&request.to_string()).unwrap()).unwrap();
+        let content = response["result"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[1], json!({ "type": "image", "data": "cG5n", "mimeType": "image/png" }));
+    }
+
+    #[test]
+    fn encodes_base64() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xff, 0xfe, 0x00]), "//4A");
     }
 }

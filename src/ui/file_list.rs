@@ -5,16 +5,14 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 
+use crate::core::changes::ChangeKind;
 use crate::core::review::ApprovalState;
-use crate::core::status::ChangeKind;
 use crate::ui::util;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileItem {
     pub path: String,
     pub kind: ChangeKind,
-    /// Extra tooltip text, e.g. "Staged and unstaged changes".
-    pub detail: String,
     pub additions: u32,
     pub deletions: u32,
     pub approval: ApprovalState,
@@ -248,11 +246,6 @@ fn fill_row(row: &gtk::ListBoxRow, item: &FileItem) {
     } else {
         row.remove_css_class("approved");
     }
-    let mut tooltip = format!("{}\n{}", item.path, item.kind.label());
-    if !item.detail.is_empty() {
-        tooltip.push_str(" · ");
-        tooltip.push_str(&item.detail);
-    }
-    row.set_tooltip_text(Some(&tooltip));
+    row.set_tooltip_text(Some(&format!("{}\n{}", item.path, item.kind.label())));
     row.set_child(Some(&content));
 }

@@ -62,7 +62,7 @@ pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) ->
         sections.push_str("## The running product\n\n");
         for note in product {
             feedback.note_ids.push(note.id);
-            write_page_comment(&mut sections, note.page.as_deref(), &note.body, "");
+            write_page_comment(&mut sections, note.page.as_deref(), note.screenshot.as_deref(), &note.body, "");
         }
         sections.push('\n');
     }
@@ -153,9 +153,10 @@ pub fn write_comment(out: &mut String, anchor: Option<&LineAnchor>, body: &str, 
     write_body(out, body);
 }
 
-/// Writes one comment on the running product, on the page at `page`, as a
-/// Markdown list item; `tag` follows its label.
-pub fn write_page_comment(out: &mut String, page: Option<&str>, body: &str, tag: &str) {
+/// Writes one comment on the running product, on the page at `page`, with
+/// the screenshot the user drew on, as a Markdown list item; `tag` follows its
+/// label.
+pub fn write_page_comment(out: &mut String, page: Option<&str>, screenshot: Option<&str>, body: &str, tag: &str) {
     match page {
         Some(page) => {
             let _ = writeln!(out, "- **Page**{tag}: {}", code_span(page));
@@ -163,6 +164,9 @@ pub fn write_page_comment(out: &mut String, page: Option<&str>, body: &str, tag:
         None => {
             let _ = writeln!(out, "- **Product**{tag}");
         }
+    }
+    if let Some(screenshot) = screenshot {
+        let _ = writeln!(out, "  Screenshot, drawn on: `{screenshot}`");
     }
     write_body(out, body);
 }
@@ -286,7 +290,8 @@ These files look good, no changes needed:
         let mut review = ReviewState::default();
         review.add_note("a.rs", None, "Fix", None, 1);
         let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
-        let commit = ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add a.rs".into(), base: None };
+        let commit =
+            ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add a.rs".into(), base: None, request: None };
         let text = build(&review, &files, &Options { commit: Some(commit.clone()), ..Options::default() }).text;
         assert!(text.starts_with("I reviewed commit 0123456 (Add a.rs). Please address the following notes."));
         let version = ReviewedCommit { base: Some("fedcba9876543210".into()), ..commit };
@@ -298,12 +303,19 @@ These files look good, no changes needed:
     fn product_comments_come_first() {
         let mut review = ReviewState::default();
         review.add_note("a.rs", None, "Fix", None, 1);
-        review.add_product_note("http://localhost:5173/pricing", "Make the plans\n\nline up.", None, 2);
+        review.add_product_note(
+            "http://localhost:5173/pricing",
+            Some("/s/1.png"),
+            "Make the plans\n\nline up.",
+            None,
+            2,
+        );
         let files = [FileInfo { path: "a.rs", diff: None, approval: ApprovalState::Unreviewed }];
         let feedback = build(&review, &files, &Options::default());
         assert_eq!(feedback.note_ids, [2, 1]);
         assert!(feedback.text.contains(
-            "## The running product\n\n- **Page**: `http://localhost:5173/pricing`\n  Make the plans\n\n  line up.\n\n## `a.rs`"
+            "## The running product\n\n- **Page**: `http://localhost:5173/pricing`\n  Screenshot, drawn on: `/s/1.png`\n  \
+             Make the plans\n\n  line up.\n\n## `a.rs`"
         ), "{}", feedback.text);
     }
 

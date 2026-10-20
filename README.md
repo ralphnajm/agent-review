@@ -4,7 +4,7 @@
 
 # Agent Review
 
-**Read what your coding agent changed, leave comments, and hand the feedback back to it.**
+**Review what your coding agent built: the running product and the code, side by side, with your feedback handed straight back.**
 
 [![CI](https://github.com/ralphnajm/agent-review/actions/workflows/ci.yml/badge.svg)](https://github.com/ralphnajm/agent-review/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ralphnajm/agent-review)](https://github.com/ralphnajm/agent-review/releases/latest)
@@ -14,11 +14,16 @@
 
 ![Agent Review showing a project's changes: reviewed files collapsed to their header, a signed comment inline under the line it is about, the comment button on a hovered line, and the file list with review checkmarks](data/screenshots/review.png)
 
-Coding agents write a lot of code, fast, and interrupting them after every file doesn't
-scale. Agent Review is a small native Linux desktop app for reviewing their work *while it
-happens*: the diff of every uncommitted change updates live as the agent edits, you leave
-comments on lines and files as you read, and when you're ready you hand the agent all your
-feedback at once: post it for the agent to pull, or copy it as one tidy Markdown prompt.
+Coding agents build whole features, fast, and reading every line isn't the only way to check
+them. Agent Review is a small native Linux desktop app in which you review what your agent
+built the way you'd review a colleague's work: when it finishes, it commits the work and asks
+you to review that *version*. You click through the running product inside the app, draw on
+screenshots of whatever needs changing, read the code changes beside it, and hand the agent all
+your feedback at once.
+
+Anything your agent can check out can be reviewed this way: a colleague's commit, a branch or a
+pull request too. Your agent runs it, you review it, and the agent passes your review on, to
+the pull request, for example.
 
 It's built with Rust, GTK 4 and libadwaita, no Electron: the release binary is about 1 MB and
 uses the GTK and WebKitGTK libraries Fedora and Ubuntu already ship. WebKit only starts once
@@ -26,29 +31,38 @@ you open a product to review.
 
 ## How it works
 
-1. Let your agent loose on a Git repository.
-2. Open the repository in Agent Review and scroll through the changes as they land.
-3. Comment on whatever needs fixing and tick files off as reviewed. Comments pile up
-   quietly; nothing is sent until you say so.
-4. Press **Post Review** and tell the agent to pull your review. It gets the whole batch in
-   one go and marks each comment resolved once it has dealt with it. (No MCP? **Copy
-   Feedback** and paste instead.)
+1. Connect your agent to Agent Review and install the [agent skill](#connecting-your-agent).
+2. Ask your agent for a feature. When it's done, it commits the work, starts the product, and
+   asks you to review that version. The version opens in Agent Review.
+3. Click through the product. Press the comment button to freeze the page into a screenshot,
+   draw on it, and say what you want changed. Switch to **Code** to read the changes and
+   comment on lines and files. Nothing is sent until you say so.
+4. Press **Post Review** and tell the agent to pull your review. It gets the whole batch,
+   screenshots included, addresses it, and asks you to review the next version. (No MCP?
+   **Copy Feedback** and paste instead.)
 5. Repeat until you're happy (or until lunch).
 
 ## Features
 
 - **Projects:** open any Git repository (or a sub-folder of one) and switch between recent
   projects at any time.
-- **Changes:** every changed file in one scrolling view, like a pull request. Each file's
-  header sticks to the top while you scroll through it, and clicking a file in the file panel
-  jumps straight to it. Show all uncommitted changes, or only staged or only unstaged ones.
-  Untracked files count as new, and everything updates live as the agent edits files.
-- **Commits:** the button above the file panel opens the history of the repository as a graph.
-  Pick a commit to review what it changed, with its own comments and reviewed files; the top
-  row takes you back to the uncommitted changes.
-- **Diffs:** syntax highlighted, with old and new line numbers, find across files, and a
-  filter for the file list. Show changes one above the other, or old and new side by side
-  (**Side by Side** in the main menu).
+- **Versions:** your agent asks you to review a version: a commit, compared to where its branch
+  left its upstream, with the product running from it. The current version opens by itself, a
+  banner announces newer ones, and the button above the file panel lists them all, marking
+  those you reviewed and those the repository has moved past. Comments and reviewed files carry
+  over when the agent amends the version and asks again.
+- **Product:** the version's product opens inside Agent Review, in an embedded browser with
+  back, forward and reload. **Product** and **Code** at the top switch between it and the code.
+  Logins to your product are remembered, and right-click **Inspect Element** opens the web
+  inspector.
+- **Whiteboard:** the comment button freezes the page into a screenshot and gives you a marker,
+  arrows, boxes, sticky notes and text in four colours to draw on it with. Your comment and the
+  screenshot reach your agent together.
+- **Code:** every file the version changed in one scrolling view, like a pull request. Each
+  file's header sticks to the top while you scroll through it, and clicking a file in the file
+  panel jumps straight to it. Syntax highlighted, with old and new line numbers, find across
+  files, and a filter for the file list. Show changes one above the other, or old and new side
+  by side (**Side by Side** in the main menu).
 - **Comments:**
   - Hover a line and click the comment button beside it to comment on that line, or drag it
     up or down to comment on several lines. Shift-click extends the previous pick.
@@ -57,20 +71,13 @@ you open a product to review.
   - Comments appear inline, under the lines they refer to.
   - Comments already sent to the agent leave the diff. The clock button next to the file
     name shows how many there are and opens them above the diff for reference.
-- **Review requests:** your agent can commit its work and ask you to review that version, with
-  a link to the running product. A banner tells you it's ready; **Review** opens the product
-  inside Agent Review, where you click through it and comment on the pages, and **Code** shows
-  everything the version changes since its branch left its upstream (or since its parent commit
-  without one). Comments on the product go to your agent together with the code comments.
-  Comments and reviewed files carry over when the agent amends the version and asks again, and a
-  version the repository has moved past is marked out of date.
 - **Reviewed checkbox:** tick the box next to the file name to mark the file done. It
   collapses to its header and the view moves on to the next file to review. Commenting on a
   file also marks it reviewed. If the file changes afterwards, it opens again, flagged for
   another look.
 - **Post Review:** queues all unsent comments for your agent, which pulls them through the
-  [MCP server](#connecting-your-agent). Changed your mind? Undo takes the review back until
-  the agent pulls it.
+  [MCP server](#connecting-your-agent), and marks the version reviewed. Changed your mind?
+  Undo takes the review back until the agent pulls it.
 - **Posted reviews:** in the main menu, lists every review you posted, each comment marked
   *Waiting*, *Picked up* or *Resolved*. It updates live as the agent works.
 - **Copy Feedback:** from the arrow next to Post Review, puts all unsent comments on the
@@ -87,8 +94,8 @@ Review state lives in `~/.local/share/agent-review/`, never inside your reposito
 | Ctrl+P | Switch project |
 | Ctrl+F | Find in files |
 | Ctrl+Shift+F | Filter the file list |
-| Ctrl+H | Review a commit |
-| Ctrl+M | Comment on the selected lines |
+| Ctrl+H | Versions to review |
+| Ctrl+M | Comment on the selected lines, or on the product |
 | Alt+↑ / Alt+↓ | Previous / next file |
 | Ctrl+Shift+A | Mark the file as reviewed |
 | Ctrl+Shift+P | Post review |
@@ -148,7 +155,7 @@ agent-review path/to/repo
 
 ### Connecting your agent
 
-Your agent pulls posted reviews through Agent Review's MCP server, `agent-review --mcp`.
+Your agent asks for reviews and pulls them through Agent Review's MCP server, `agent-review --mcp`.
 Add it to your agent once; the agent starts it by itself when needed, and it works whether
 or not the app is open. For example:
 
@@ -171,7 +178,8 @@ Agents configured with an `mcpServers` JSON file, such as Gemini CLI and Cursor:
 ```
 
 To teach your agent the whole workflow (committing a version, starting the product, requesting
-a review, and addressing your comments), also install the Agent Review skill, which works with
+a review, preparing someone else's commit or pull request for you, and acting on your review),
+also install the Agent Review skill, which works with
 Claude Code, Codex, Cursor and the other agents that support
 [Agent Skills](https://github.com/vercel-labs/skills):
 
@@ -183,10 +191,10 @@ Or use **Install Agent Skill…** in the main menu, which installs it for Claude
 standard agents folder (`~/.agents/skills`), or in a folder you choose, and keeps it up to date
 there whenever Agent Review starts.
 
-Then post a review and ask the agent to "pull my review". The server gives the agent three
-tools: `request_review` asks you to review the version it committed, `get_review` returns the
-open comments for the repository it is working in, and `resolve_comments` marks the ones it
-has addressed, which you see in *Posted reviews*.
+Then ask your agent to build something, or to get a colleague's pull request ready for you to
+review. The server gives the agent three tools: `request_review` asks you to review the version
+checked out, `get_review` returns your open comments, with the screenshots you drew on, and
+`resolve_comments` marks the ones it has dealt with, which you see in *Posted reviews*.
 
 ## Development
 

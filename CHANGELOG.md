@@ -5,6 +5,33 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.3] - 2026-10-20
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Added
+
+- Draw on the product: the comment button freezes the page into a screenshot and gives you a marker, arrows, boxes,
+  sticky notes and text in four colours to draw on it with. Your comment and the screenshot go to your agent
+  together, and your agent sees the screenshot as an image when it pulls the review. Comments show the screenshot;
+  click it to open it full size.
+- Review someone else's work: your agent can check out a colleague's commit, a branch or a pull request, run it, and
+  ask you to review it, with a title saying whose it is. Compared to the branch it goes into, it shows only that
+  work's changes. The agent skill explains how, and how to pass your review on afterwards, for example as a review
+  on the pull request.
+- A version you posted a review of is marked **Reviewed** in the list of versions.
+
+### Changed
+
+- Agent Review now only reviews versions your agent asks you to review. The current one opens by itself, and the
+  button above the file panel lists them all, newest first, instead of the repository's history.
+
+### Removed
+
+- Reviewing uncommitted changes as they happen (with the All, Staged and Unstaged tabs), and reviewing any commit
+  picked from the repository's history. Ask your agent to request a review instead: it commits the work, or checks
+  out the commit, and the version opens in Agent Review.
+
 ## [1.0.0-alpha.2] - 2026-10-20
 
 A pre-release: to get it, switch Check for Updates to **Pre-releases**, or download it from this release.

@@ -7,15 +7,17 @@
   <summary>Review the changes coding agents make</summary>
   <description>
     <p>
-      Agent Review shows the uncommitted changes in your Git projects while a coding agent works on
-      them. Mark files as reviewed, comment on specific lines, and hand the feedback back to the
-      agent: post it for the agent to pull through MCP, or copy it to paste.
+      Agent Review is where you review what your coding agent built. When it finishes, it asks you
+      to review that version: you click through the running product, draw on screenshots of what
+      needs changing, read the code changes, and hand the feedback back to the agent: post it for
+      the agent to pull through MCP, or copy it to paste.
     </p>
     <ul>
       <li>Switch between projects at any time</li>
-      <li>Browse all, staged or unstaged changes with syntax highlighting</li>
-      <li>Updates live as files change</li>
-      <li>Reviewed files are flagged when they change afterwards</li>
+      <li>Review the running product in an embedded browser, next to the code</li>
+      <li>Draw on screenshots with a marker, arrows, boxes, sticky notes and text</li>
+      <li>Read the code changes with syntax highlighting, and comment on lines and files</li>
+      <li>Review a colleague's commit or pull request the same way, through your agent</li>
       <li>Post your review for your agent to pull, and see which comments it has resolved</li>
       <li>Or copy your feedback as Markdown, ready to paste into your agent</li>
     </ul>
@@ -37,6 +39,7 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="1.0.0-alpha.3" date="2026-10-20" type="development"/>
     <release version="1.0.0-alpha.2" date="2026-10-20" type="development"/>
     <release version="1.0.0-alpha.1" date="2026-10-20" type="development"/>
     <release version="0.10.0" date="2026-10-14"/>

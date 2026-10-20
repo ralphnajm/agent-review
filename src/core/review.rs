@@ -76,6 +76,9 @@ pub struct ReviewedCommit {
     /// are compared to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// The id of that version's review request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<u64>,
 }
 
 impl ReviewedCommit {
@@ -100,6 +103,9 @@ pub struct Note {
     /// For a comment on the running product, the address of the page it is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
+    /// The screenshot of the page the user drew on, as a PNG file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<String>,
     pub body: String,
     /// Who wrote it; missing when git had no `user.name`, or for comments
     /// written before authors were recorded.
@@ -179,14 +185,30 @@ impl ReviewState {
         self.next_id += 1;
         let id = self.next_id;
         let author = author.cloned();
-        let note =
-            Note { id, anchor, page: None, body: body.trim().to_owned(), author, created_at: now, sent_at: None };
+        let note = Note {
+            id,
+            anchor,
+            page: None,
+            screenshot: None,
+            body: body.trim().to_owned(),
+            author,
+            created_at: now,
+            sent_at: None,
+        };
         self.files.entry(path.to_owned()).or_default().notes.push(note);
         id
     }
 
-    /// Comments on the running product on the page at `page`.
-    pub fn add_product_note(&mut self, page: &str, body: &str, author: Option<&Author>, now: i64) -> u64 {
+    /// Comments on the running product on the page at `page`, with the
+    /// screenshot of it the user drew on.
+    pub fn add_product_note(
+        &mut self,
+        page: &str,
+        screenshot: Option<&str>,
+        body: &str,
+        author: Option<&Author>,
+        now: i64,
+    ) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
         let page = Some(page.to_owned());
@@ -195,6 +217,7 @@ impl ReviewState {
             id,
             anchor: None,
             page,
+            screenshot: screenshot.map(str::to_owned),
             body: body.trim().to_owned(),
             author,
             created_at: now,
@@ -316,10 +339,12 @@ mod tests {
     fn product_notes_count_with_the_file_notes() {
         let mut review = ReviewState::default();
         let file = review.add_note("a.rs", None, "Fix", None, 1);
-        let page = review.add_product_note("http://localhost:5173/pricing", " Bigger button ", None, 2);
+        let page =
+            review.add_product_note("http://localhost:5173/pricing", Some("/s/1.png"), " Bigger button ", None, 2);
         assert_ne!(file, page);
         assert_eq!(review.product[0].page.as_deref(), Some("http://localhost:5173/pricing"));
         assert_eq!(review.product[0].body, "Bigger button");
+        assert_eq!(review.product[0].screenshot.as_deref(), Some("/s/1.png"));
         assert_eq!(review.unsent(), 2);
         review.set_sent(&[page], Some(3));
         assert_eq!((review.unsent_product_notes(), review.unsent()), (0, 1));

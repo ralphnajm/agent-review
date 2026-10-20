@@ -2077,9 +2077,6 @@ fn describe_without_hunks(diff: &FileDiff) -> String {
     if diff.is_binary {
         return "Binary file: no diff to show.".into();
     }
-    if diff.is_oversized {
-        return "New file larger than 4 MB: not shown.".into();
-    }
     if let Some(from) = diff.renamed_from() {
         return format!("Renamed from {from}, content unchanged.");
     }

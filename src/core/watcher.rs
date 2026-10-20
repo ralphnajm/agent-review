@@ -1,17 +1,14 @@
-//! Watches a repository and reports when its changes may need refreshing,
-//! and watches the queue of posted reviews for the agent's progress.
-//!
-//! Only directories git cares about are watched (one inotify watch each), so
-//! large ignored trees such as `node_modules` or `target` cost nothing.
+//! Watches a repository for `HEAD` moving, which may put the version under
+//! review out of date, and watches the review queue for the agent's progress
+//! and requests.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
-use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
+use notify::event::{AccessKind, AccessMode, ModifyKind};
 use notify::{Event, EventKind, RecursiveMode, Watcher as _};
 
 use crate::core::git::Repo;
@@ -73,29 +70,11 @@ pub fn watch_dir(dir: PathBuf, on_change: impl Fn() + Send + 'static) -> WatchHa
 fn run(repo: &Repo, stop: &AtomicBool, on_change: &dyn Fn()) -> notify::Result<()> {
     let (tx, rx) = channel();
     let mut watcher = notify::recommended_watcher(tx)?;
-    let mut watched_dirs = BTreeSet::new();
-
-    // HEAD and index changes (commits, staging, checkouts) live in the git dir.
+    // HEAD and branch moves (commits, amends, resets, checkouts) live in the git dir.
     watcher.watch(&repo.git_dir, RecursiveMode::NonRecursive)?;
     // The reflog is appended on every commit, even when the index is untouched.
     let _ = watcher.watch(&repo.git_dir.join("logs"), RecursiveMode::NonRecursive);
-    for dir in repo.watched_dirs().unwrap_or_default() {
-        if watcher.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
-            watched_dirs.insert(dir);
-        }
-    }
-
-    debounce(&rx, stop, on_change, |event| {
-        if !is_relevant(repo, event) {
-            return false;
-        }
-        if matches!(event.kind, EventKind::Create(CreateKind::Folder | CreateKind::Any)) {
-            for path in &event.paths {
-                watch_new_dir(repo, &mut watcher, &mut watched_dirs, path);
-            }
-        }
-        true
-    });
+    debounce(&rx, stop, on_change, |event| is_relevant(repo, event));
     Ok(())
 }
 
@@ -129,21 +108,6 @@ fn debounce(
     }
 }
 
-fn watch_new_dir(repo: &Repo, notifier: &mut impl notify::Watcher, watched: &mut BTreeSet<PathBuf>, path: &Path) {
-    if !path.is_dir() || watched.contains(path) || repo.is_ignored(path) {
-        return;
-    }
-    if notifier.watch(path, RecursiveMode::NonRecursive).is_ok() {
-        watched.insert(path.to_path_buf());
-    }
-    // Directories created together with their contents (`mkdir -p`, `git checkout`).
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            watch_new_dir(repo, notifier, watched, &entry.path());
-        }
-    }
-}
-
 /// Whether an event may have changed what a file or directory holds.
 fn is_write(kind: EventKind) -> bool {
     matches!(
@@ -158,10 +122,8 @@ fn is_write(kind: EventKind) -> bool {
 fn is_relevant(repo: &Repo, event: &Event) -> bool {
     is_write(event.kind)
         && event.paths.iter().any(|path| {
-            if let Ok(inside) = path.strip_prefix(&repo.git_dir) {
-                // Lock files and object writes are noise; the final rename is what counts.
-                return matches!(inside.to_str(), Some("index" | "HEAD" | "packed-refs" | "logs/HEAD"));
-            }
-            !path.components().any(|c| c.as_os_str() == ".git")
+            // Lock files and object writes are noise; the final rename is what counts.
+            let inside = path.strip_prefix(&repo.git_dir).ok().and_then(Path::to_str);
+            matches!(inside, Some("HEAD" | "packed-refs" | "logs/HEAD"))
         })
 }

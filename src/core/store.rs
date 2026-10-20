@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::hash;
 use crate::core::review::ReviewState;
-use crate::core::status::DiffMode;
 use crate::core::update::Channel;
 
 const APP_DIR: &str = "agent-review";
@@ -39,7 +38,6 @@ impl Default for WindowGeometry {
 pub struct Settings {
     pub recent: Vec<RecentProject>,
     pub last_project: Option<PathBuf>,
-    pub diff_mode: DiffMode,
     /// Whether diffs show the old and new sides beside each other.
     pub side_by_side: bool,
     pub show_sidebar: bool,
@@ -57,7 +55,6 @@ impl Default for Settings {
         Self {
             recent: Vec::new(),
             last_project: None,
-            diff_mode: DiffMode::All,
             side_by_side: false,
             show_sidebar: true,
             sidebar_width: 320,
@@ -93,36 +90,19 @@ impl Settings {
     }
 }
 
-/// Which review of a project.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReviewOf {
-    /// Of its uncommitted changes.
-    Changes,
-    Commit(String),
-    /// Of a version the agent asked to have reviewed. The versions compared to
-    /// the same base share a review, so it carries over to the next version.
-    Version {
-        base: String,
-    },
+/// The review of the versions of the project at `path` compared to commit
+/// `base`. They share a review, so it carries over from one version to the next.
+pub fn load_review(path: &Path, base: &str) -> ReviewState {
+    read_json(&review_file(path, base)).unwrap_or_default()
 }
 
-/// Review state for the project at `path`.
-pub fn load_review(path: &Path, of: &ReviewOf) -> ReviewState {
-    read_json(&review_file(path, of)).unwrap_or_default()
+pub fn save_review(path: &Path, base: &str, review: &ReviewState) -> std::io::Result<()> {
+    write_json(&review_file(path, base), review)
 }
 
-pub fn save_review(path: &Path, of: &ReviewOf, review: &ReviewState) -> std::io::Result<()> {
-    write_json(&review_file(path, of), review)
-}
-
-fn review_file(path: &Path, of: &ReviewOf) -> PathBuf {
+fn review_file(path: &Path, base: &str) -> PathBuf {
     let key = hash::hex(path.as_os_str().as_encoded_bytes());
-    let reviews = data_dir().join("reviews");
-    match of {
-        ReviewOf::Changes => reviews.join(format!("{key}.json")),
-        ReviewOf::Commit(id) => reviews.join("commits").join(key).join(format!("{id}.json")),
-        ReviewOf::Version { base } => reviews.join("versions").join(key).join(format!("{base}.json")),
-    }
+    data_dir().join("reviews").join("versions").join(key).join(format!("{base}.json"))
 }
 
 /// Where the reviews posted for the repository at `root` are queued.
@@ -139,6 +119,12 @@ pub fn web_data_dir() -> PathBuf {
 
 pub fn web_cache_dir() -> PathBuf {
     xdg_dir("XDG_CACHE_HOME", ".cache").join(APP_DIR).join("web")
+}
+
+/// Where a screenshot the user drew on, taken at `millis`, is kept. Outside
+/// the repository, like the rest of the review, but readable by the agent.
+pub fn screenshot_file(millis: u128) -> PathBuf {
+    data_dir().join("screenshots").join(format!("{millis}-{}.png", std::process::id()))
 }
 
 fn config_dir() -> PathBuf {
@@ -200,6 +186,5 @@ mod tests {
         let partial: Settings = read_json(&file).unwrap();
         assert!(!partial.show_sidebar);
         assert_eq!(partial.sidebar_width, 320);
-        assert_eq!(partial.diff_mode, DiffMode::All);
     }
 }
