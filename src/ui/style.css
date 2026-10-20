@@ -238,14 +238,13 @@ button.history-button { min-height: 28px; padding: 0 6px; border-radius: 6px; fo
   font-size: 0.9em;
   background: alpha(currentColor, 0.06);
 }
-.product-comments {
-  background: @sidebar_bg_color;
-  border-left: 1px solid alpha(currentColor, 0.1);
-}
 .comment-screenshot { border-radius: 6px; box-shadow: 0 0 0 1px alpha(currentColor, 0.12); }
 
 /* ----- Whiteboard ----- */
 .whiteboard { background: alpha(currentColor, 0.15); }
+/* Its tools, in place of the browser's bar. */
+.whiteboard-tools button.tool-button { min-height: 28px; min-width: 28px; padding: 0 5px; border-radius: 6px; }
+.whiteboard-tools button.tool-button:checked { background: alpha(@accent_bg_color, 0.18); color: @accent_color; }
 /* The colours of the whiteboard's marker, arrows, boxes and text. */
 button.swatch {
   min-width: 18px;

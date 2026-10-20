@@ -5,6 +5,29 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.4] - 2026-10-20
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Added
+
+- Redo on the whiteboard, beside Undo (Ctrl+Shift+Z or Ctrl+Y; Undo is Ctrl+Z).
+
+### Changed
+
+- Drawing on the product is all you need to do: the pencil above the page freezes it into a screenshot, the drawing
+  tools take the place of the browser's bar, as icons, and the pencil becomes **Done**, which adds your drawing to the
+  review and takes you back to the page (Ctrl+Enter; Esc throws the drawing away). What you write on sticky notes and
+  as text is the comment, so there's no comments panel to type in anymore. **Post Review** includes a drawing you
+  haven't finished with Done.
+- Sticky notes look like sticky notes: square yellow paper, a little askew, with a curling corner.
+- The drawings not posted yet are listed in a popover next to the pencil, where you can delete them.
+
+### Fixed
+
+- Logins to your product are kept between runs: the product's cookies are now saved.
+- Asking again for a review of the version you're reviewing no longer announces it as a new version.
+
 ## [1.0.0-alpha.3] - 2026-10-20
 
 A pre-release: Check for Updates offers it on the **Pre-releases** channel.

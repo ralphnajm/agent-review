@@ -34,7 +34,10 @@ pub const COLORS: [(&str, Rgb); 4] = [
     ("Black", (0.1, 0.1, 0.1)),
 ];
 
-const STICKY: Rgb = (1.0, 0.91, 0.45);
+/// A sticky note's paper, top to bottom, and its curled corner.
+const STICKY_TOP: Rgb = (1.0, 0.94, 0.55);
+const STICKY_BOTTOM: Rgb = (0.99, 0.87, 0.38);
+const STICKY_CURL: Rgb = (0.91, 0.78, 0.3);
 
 #[derive(Debug, Clone)]
 enum Item {
@@ -52,6 +55,8 @@ struct Inner {
     area: gtk::DrawingArea,
     image: RefCell<Option<cairo::ImageSurface>>,
     items: RefCell<Vec<Item>>,
+    /// What Undo took back, last first, for Redo; drawing anything new forgets it.
+    undone: RefCell<Vec<Item>>,
     /// The item a drag is drawing.
     drawing: RefCell<Option<Item>>,
     /// Where the drag started, in the widget.
@@ -63,12 +68,13 @@ struct Inner {
     entry: gtk::Entry,
     /// Where the text being typed goes, in the screenshot.
     pending: Cell<Option<(f64, f64)>>,
-    on_change: RefCell<Option<Box<dyn Fn()>>>,
+    on_change: RefCell<Vec<Box<dyn Fn()>>>,
 }
 
 impl Whiteboard {
     pub fn new() -> Self {
-        let area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).build();
+        // Focusable, for the whiteboard's keys.
+        let area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).focusable(true).build();
         area.add_css_class("whiteboard");
         area.set_cursor_from_name(Some("crosshair"));
         let entry = gtk::Entry::builder().width_chars(28).build();
@@ -79,6 +85,7 @@ impl Whiteboard {
             area,
             image: RefCell::default(),
             items: RefCell::default(),
+            undone: RefCell::default(),
             drawing: RefCell::default(),
             drag_start: Cell::new((0.0, 0.0)),
             tool: Cell::new(Tool::Marker),
@@ -142,7 +149,7 @@ impl Whiteboard {
 
     /// Called whenever the drawing changes.
     pub fn connect_change(&self, callback: impl Fn() + 'static) {
-        self.0.on_change.replace(Some(Box::new(callback)));
+        self.0.on_change.borrow_mut().push(Box::new(callback));
     }
 
     pub fn set_tool(&self, tool: Tool) {
@@ -163,6 +170,7 @@ impl Whiteboard {
         let surface = cairo::ImageSurface::create_for_data(data, cairo::Format::ARgb32, width, height, stride)?;
         self.0.image.replace(Some(surface));
         self.0.items.borrow_mut().clear();
+        self.0.undone.borrow_mut().clear();
         self.0.drawing.replace(None);
         self.changed();
         Ok(())
@@ -187,8 +195,23 @@ impl Whiteboard {
     }
 
     pub fn undo(&self) {
-        self.0.items.borrow_mut().pop();
-        self.changed();
+        let item = self.0.items.borrow_mut().pop();
+        if let Some(item) = item {
+            self.0.undone.borrow_mut().push(item);
+            self.changed();
+        }
+    }
+
+    pub fn redo(&self) {
+        let item = self.0.undone.borrow_mut().pop();
+        if let Some(item) = item {
+            self.0.items.borrow_mut().push(item);
+            self.changed();
+        }
+    }
+
+    fn can_redo(&self) -> bool {
+        !self.0.undone.borrow().is_empty()
     }
 
     /// Saves the screenshot with the drawing on it as a PNG, scaled down to at
@@ -226,12 +249,13 @@ impl Whiteboard {
 
     fn changed(&self) {
         self.0.area.queue_draw();
-        if let Some(callback) = self.0.on_change.borrow().as_ref() {
+        for callback in self.0.on_change.borrow().iter() {
             callback();
         }
     }
 
     fn push(&self, item: Item) {
+        self.0.undone.borrow_mut().clear();
         self.0.items.borrow_mut().push(item);
         self.changed();
     }
@@ -327,6 +351,156 @@ impl Whiteboard {
     }
 }
 
+/// The whiteboard's tools, colours, Undo and Redo, in a bar of icons.
+pub fn build_tools(board: &Whiteboard) -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    bar.add_css_class("whiteboard-tools");
+    let tools = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    let mut first: Option<gtk::ToggleButton> = None;
+    for (tool, tooltip) in [
+        (Tool::Marker, "Marker"),
+        (Tool::Arrow, "Arrow"),
+        (Tool::Box, "Box"),
+        (Tool::Sticky, "Sticky Note: click where it goes"),
+        (Tool::Text, "Text: click where it goes"),
+    ] {
+        let icon = gtk::DrawingArea::builder().content_width(18).content_height(18).build();
+        icon.set_draw_func(move |area, cr, width, height| draw_tool_icon(area, cr, tool, width, height));
+        let button = gtk::ToggleButton::builder().child(&icon).tooltip_text(tooltip).build();
+        button.add_css_class("flat");
+        button.add_css_class("tool-button");
+        button.set_group(first.as_ref());
+        let board = board.clone();
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                board.set_tool(tool);
+            }
+        });
+        tools.append(&button);
+        first.get_or_insert(button);
+    }
+    if let Some(first) = first {
+        first.set_active(true);
+    }
+    bar.append(&tools);
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+    let colors = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    colors.set_margin_start(4);
+    colors.set_margin_end(4);
+    let mut first: Option<gtk::ToggleButton> = None;
+    for (name, color) in COLORS {
+        let button = gtk::ToggleButton::builder().tooltip_text(name).valign(gtk::Align::Center).build();
+        button.add_css_class("swatch");
+        button.add_css_class(&format!("swatch-{}", name.to_lowercase()));
+        button.set_group(first.as_ref());
+        let board = board.clone();
+        button.connect_toggled(move |button| {
+            if button.is_active() {
+                board.set_color(color);
+            }
+        });
+        colors.append(&button);
+        first.get_or_insert(button);
+    }
+    if let Some(first) = first {
+        first.set_active(true);
+    }
+    bar.append(&colors);
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+    let undo = gtk::Button::builder().icon_name("edit-undo-symbolic").tooltip_text("Undo (Ctrl+Z)").build();
+    let redo = gtk::Button::builder().icon_name("edit-redo-symbolic").tooltip_text("Redo (Ctrl+Shift+Z)").build();
+    for (button, redo_it) in [(&undo, false), (&redo, true)] {
+        button.add_css_class("flat");
+        button.add_css_class("tool-button");
+        let weak = board.weak();
+        button.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                if redo_it { Whiteboard(inner).redo() } else { Whiteboard(inner).undo() }
+            }
+        });
+        bar.append(button);
+    }
+    let (weak, buttons) = (board.weak(), (undo, redo));
+    let update = move || {
+        if let Some(inner) = weak.upgrade() {
+            let board = Whiteboard(inner);
+            buttons.0.set_sensitive(board.has_drawing());
+            buttons.1.set_sensitive(board.can_redo());
+        }
+    };
+    update();
+    board.connect_change(update);
+
+    let hint = util_hint();
+    bar.append(&hint);
+    bar
+}
+
+/// What to do next, at the end of the bar.
+fn util_hint() -> gtk::Label {
+    let hint = gtk::Label::builder()
+        .label("Draw on the screenshot, then press Done · Esc discards it")
+        .hexpand(true)
+        .xalign(1.0)
+        .ellipsize(pango::EllipsizeMode::End)
+        .build();
+    hint.add_css_class("dim-label");
+    hint.add_css_class("caption");
+    hint
+}
+
+/// Draws the icon of `tool` in the button's text colour.
+fn draw_tool_icon(area: &gtk::DrawingArea, cr: &cairo::Context, tool: Tool, width: i32, height: i32) {
+    let color = area.color();
+    cr.set_source_rgba(
+        f64::from(color.red()),
+        f64::from(color.green()),
+        f64::from(color.blue()),
+        f64::from(color.alpha()),
+    );
+    // Laid out on an 18 × 18 grid.
+    let scale = f64::from(width.min(height)) / 18.0;
+    cr.scale(scale, scale);
+    cr.set_line_width(1.8);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    match tool {
+        Tool::Marker => {
+            cr.move_to(2.5, 13.0);
+            cr.curve_to(5.0, 5.0, 7.5, 5.0, 9.0, 9.5);
+            cr.curve_to(10.5, 14.0, 13.0, 14.0, 15.5, 5.0);
+        }
+        Tool::Arrow => {
+            cr.move_to(3.0, 15.0);
+            cr.line_to(15.0, 3.0);
+            cr.move_to(8.0, 3.0);
+            cr.line_to(15.0, 3.0);
+            cr.line_to(15.0, 10.0);
+        }
+        Tool::Box => cr.rectangle(2.5, 4.0, 13.0, 10.0),
+        Tool::Sticky => {
+            cr.move_to(3.0, 3.0);
+            cr.line_to(15.0, 3.0);
+            cr.line_to(15.0, 11.0);
+            cr.line_to(11.0, 15.0);
+            cr.line_to(3.0, 15.0);
+            cr.close_path();
+            cr.move_to(15.0, 11.0);
+            cr.line_to(11.0, 11.0);
+            cr.line_to(11.0, 15.0);
+        }
+        Tool::Text => {
+            cr.move_to(3.5, 4.0);
+            cr.line_to(14.5, 4.0);
+            cr.move_to(9.0, 4.0);
+            cr.line_to(9.0, 15.0);
+        }
+    }
+    let _ = cr.stroke();
+}
+
 /// The size of a pixel on a regular screen, in the screenshot's pixels, so
 /// lines and text look the same on high-resolution screenshots.
 fn unit(image: &cairo::ImageSurface) -> f64 {
@@ -368,23 +542,9 @@ fn draw_item(cr: &cairo::Context, item: &Item, unit: f64) {
             cr.rectangle(from.0.min(to.0), from.1.min(to.1), (to.0 - from.0).abs(), (to.1 - from.1).abs());
             let _ = cr.stroke();
         }
-        Item::Sticky { at, text } => {
-            let layout = text_layout(cr, text, 16.0 * unit, Some(220.0 * unit));
-            let (width, height) = layout.pixel_size();
-            let pad = 12.0 * unit;
-            let (w, h) = (f64::from(width) + 2.0 * pad, f64::from(height) + 2.0 * pad);
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.2);
-            cr.rectangle(at.0 + 3.0 * unit, at.1 + 4.0 * unit, w, h);
-            let _ = cr.fill();
-            set_color(cr, STICKY);
-            cr.rectangle(at.0, at.1, w, h);
-            let _ = cr.fill();
-            cr.set_source_rgb(0.15, 0.13, 0.05);
-            cr.move_to(at.0 + pad, at.1 + pad);
-            pangocairo::functions::show_layout(cr, &layout);
-        }
+        Item::Sticky { at, text } => draw_sticky(cr, *at, text, unit),
         Item::Text { color, at, text } => {
-            let layout = text_layout(cr, text, 22.0 * unit, None);
+            let layout = text_layout(cr, text, "Sans Bold", 22.0 * unit, None);
             cr.move_to(at.0, at.1);
             // A white outline keeps the text readable on any background.
             pangocairo::functions::layout_path(cr, &layout);
@@ -398,13 +558,60 @@ fn draw_item(cr: &cairo::Context, item: &Item, unit: f64) {
     cr.restore().ok();
 }
 
+/// A square note of yellow paper, a little askew, its corner curling up,
+/// with `text` on it.
+fn draw_sticky(cr: &cairo::Context, at: (f64, f64), text: &str, unit: f64) {
+    let (side, pad, curl) = (170.0 * unit, 16.0 * unit, 22.0 * unit);
+    let layout = text_layout(cr, text, "Sans", 17.0 * unit, Some(side - 2.0 * pad));
+    let height = side.max(f64::from(layout.pixel_size().1) + 2.0 * pad + curl);
+    cr.translate(at.0 + side / 2.0, at.1 + height / 2.0);
+    cr.rotate(-0.035);
+    cr.translate(-side / 2.0, -height / 2.0);
+    // The outline, without the corner that curls up.
+    let paper = |cr: &cairo::Context, dx: f64, dy: f64| {
+        cr.move_to(dx, dy);
+        cr.line_to(side + dx, dy);
+        cr.line_to(side + dx, height - curl + dy);
+        cr.line_to(side - curl + dx, height + dy);
+        cr.line_to(dx, height + dy);
+        cr.close_path();
+    };
+    // A soft shadow, deeper towards the bottom.
+    for step in 1..=5 {
+        let offset = f64::from(step) * unit;
+        paper(cr, offset * 0.6, offset * 1.2);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.045);
+        let _ = cr.fill();
+    }
+    paper(cr, 0.0, 0.0);
+    let gradient = cairo::LinearGradient::new(0.0, 0.0, 0.0, height);
+    gradient.add_color_stop_rgb(0.0, STICKY_TOP.0, STICKY_TOP.1, STICKY_TOP.2);
+    gradient.add_color_stop_rgb(1.0, STICKY_BOTTOM.0, STICKY_BOTTOM.1, STICKY_BOTTOM.2);
+    let _ = cr.set_source(&gradient);
+    let _ = cr.fill();
+    // The sticky strip along the top.
+    cr.rectangle(0.0, 0.0, side, 18.0 * unit);
+    cr.set_source_rgba(0.55, 0.42, 0.0, 0.07);
+    let _ = cr.fill();
+    // The curled corner.
+    cr.move_to(side, height - curl);
+    cr.line_to(side - curl * 0.85, height - curl * 0.85);
+    cr.line_to(side - curl, height);
+    cr.close_path();
+    set_color(cr, STICKY_CURL);
+    let _ = cr.fill();
+    cr.set_source_rgb(0.27, 0.22, 0.04);
+    cr.move_to(pad, pad + 6.0 * unit);
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
 fn set_color(cr: &cairo::Context, (r, g, b): Rgb) {
     cr.set_source_rgb(r, g, b);
 }
 
-fn text_layout(cr: &cairo::Context, text: &str, size: f64, wrap: Option<f64>) -> pango::Layout {
+fn text_layout(cr: &cairo::Context, text: &str, font: &str, size: f64, wrap: Option<f64>) -> pango::Layout {
     let layout = pangocairo::functions::create_layout(cr);
-    let mut font = pango::FontDescription::from_string("Sans Bold");
+    let mut font = pango::FontDescription::from_string(font);
     #[allow(clippy::cast_possible_truncation)]
     font.set_absolute_size(size * f64::from(pango::SCALE));
     layout.set_font_description(Some(&font));

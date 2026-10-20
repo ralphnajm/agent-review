@@ -558,7 +558,6 @@ impl Window {
         self.0.w.search.set_text("");
         self.0.w.review.clear();
         self.0.w.review.set_author(author.as_ref());
-        self.0.w.product.set_author(author.as_ref());
         self.render();
         self.refresh();
     }
@@ -739,7 +738,8 @@ impl Window {
             return;
         };
         let reviewing = project.request();
-        if let Some(ready) = project.ready_request().filter(|r| reviewing.is_none_or(|v| v.id != r.id)) {
+        // Asking again for the version under review is no news.
+        if let Some(ready) = project.ready_request().filter(|r| reviewing.is_none_or(|v| v.commit != r.commit)) {
             banner.set_title(&format!(
                 "Version {} is ready for review: {}",
                 ready.short_id(),
@@ -1060,7 +1060,7 @@ impl Window {
 
     fn open_composer(&self, lines: bool) {
         if self.0.state.borrow().product {
-            self.0.w.product.open_composer();
+            self.0.w.product.start_drawing();
             return;
         }
         let selected = self.0.state.borrow().selected.clone();
@@ -1224,6 +1224,8 @@ impl Window {
 
     /// Queues the unsent comments for the agent to pull through the MCP server.
     fn post_review(&self) {
+        // A drawing in progress is part of the review.
+        self.0.w.product.commit_drawing();
         let Some(feedback) = self.feedback() else { return };
         let ids = feedback.note_ids;
         if ids.is_empty() {

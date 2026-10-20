@@ -34,9 +34,9 @@ you open a product to review.
 1. Connect your agent to Agent Review and install the [agent skill](#connecting-your-agent).
 2. Ask your agent for a feature. When it's done, it commits the work, starts the product, and
    asks you to review that version. The version opens in Agent Review.
-3. Click through the product. Press the comment button to freeze the page into a screenshot,
-   draw on it, and say what you want changed. Switch to **Code** to read the changes and
-   comment on lines and files. Nothing is sent until you say so.
+3. Click through the product. Press the pencil to freeze the page into a screenshot, and draw
+   and write on it what you want changed. Switch to **Code** to read the changes and comment on
+   lines and files. Nothing is sent until you say so.
 4. Press **Post Review** and tell the agent to pull your review. It gets the whole batch,
    screenshots included, addresses it, and asks you to review the next version. (No MCP?
    **Copy Feedback** and paste instead.)
@@ -55,9 +55,9 @@ you open a product to review.
   back, forward and reload. **Product** and **Code** at the top switch between it and the code.
   Logins to your product are remembered, and right-click **Inspect Element** opens the web
   inspector.
-- **Whiteboard:** the comment button freezes the page into a screenshot and gives you a marker,
-  arrows, boxes, sticky notes and text in four colours to draw on it with. Your comment and the
-  screenshot reach your agent together.
+- **Whiteboard:** the pencil above the page freezes it into a screenshot to draw on with a
+  marker, arrows, boxes, sticky notes and text in four colours, with undo and redo. **Done** adds
+  it to your review: the screenshot reaches your agent as an image, with what you wrote on it.
 - **Code:** every file the version changed in one scrolling view, like a pull request. Each
   file's header sticks to the top while you scroll through it, and clicking a file in the file
   panel jumps straight to it. Syntax highlighted, with old and new line numbers, find across
@@ -95,7 +95,8 @@ Review state lives in `~/.local/share/agent-review/`, never inside your reposito
 | Ctrl+F | Find in files |
 | Ctrl+Shift+F | Filter the file list |
 | Ctrl+H | Versions to review |
-| Ctrl+M | Comment on the selected lines, or on the product |
+| Ctrl+M | Comment on the selected lines, or draw on the product |
+| Ctrl+Enter / Esc | Add the drawing to the review / throw it away |
 | Alt+↑ / Alt+↓ | Previous / next file |
 | Ctrl+Shift+A | Mark the file as reviewed |
 | Ctrl+Shift+P | Post review |

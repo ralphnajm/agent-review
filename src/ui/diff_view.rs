@@ -148,14 +148,14 @@ type FocusCallback = Box<dyn Fn()>;
 /// Reads the new side of the file, for the unchanged lines; replies with `None` if it can't.
 type LoadCallback = Box<dyn Fn(Box<dyn FnOnce(Option<String>)>)>;
 
-pub(super) struct Composer {
-    pub(super) root: gtk::Box,
+struct Composer {
+    root: gtk::Box,
     /// Who the comment is by.
-    pub(super) author: gtk::Label,
-    pub(super) title: gtk::Label,
-    pub(super) text: gtk::TextView,
-    pub(super) cancel: gtk::Button,
-    pub(super) submit: gtk::Button,
+    author: gtk::Label,
+    title: gtk::Label,
+    text: gtk::TextView,
+    cancel: gtk::Button,
+    submit: gtk::Button,
 }
 
 /// Comments from earlier rounds: those already sent to the agent.
@@ -1850,7 +1850,7 @@ impl DiffView {
     }
 }
 
-pub(super) fn build_composer() -> Composer {
+fn build_composer() -> Composer {
     let author = util::label("", &["comment-author"]);
     show_author(&author, None);
     let title = util::label("", &["comment-meta"]);
