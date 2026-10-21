@@ -354,7 +354,9 @@ impl ProductView {
             let Some(inner) = weak.upgrade() else { return };
             match snapshot {
                 Ok(screenshot) => {
-                    inner.whiteboard.set_image(&screenshot);
+                    // The screenshot is in the screen's pixels, the page in its own.
+                    let scale = f64::from(screenshot.width()) / f64::from(view.width().max(1));
+                    inner.whiteboard.set_image(&screenshot, scale);
                     inner.drawn_page.replace(page);
                     inner.stack.set_visible_child_name("whiteboard");
                     Self(inner).show_drawing(true);

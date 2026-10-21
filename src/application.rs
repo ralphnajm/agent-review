@@ -19,6 +19,7 @@ pub fn run() -> glib::ExitCode {
 
     app.connect_startup(|app| {
         gtk::Window::set_default_icon_name(config::APP_ID);
+        load_icons();
         load_css();
         setup_actions(app);
     });
@@ -37,6 +38,14 @@ pub fn run() -> glib::ExitCode {
 /// The main window, created on first use.
 fn window(app: &adw::Application) -> Window {
     WINDOW.with_borrow_mut(|slot| slot.get_or_insert_with(|| Window::new(app)).clone())
+}
+
+/// Phosphor's icons, for the whiteboard's tools, built in.
+fn load_icons() {
+    gio::resources_register_include!("icons.gresource").expect("the icons are built in");
+    if let Some(display) = gdk::Display::default() {
+        gtk::IconTheme::for_display(&display).add_resource_path("/io/github/ralphnajm/AgentReview/icons");
+    }
 }
 
 fn load_css() {

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Phosphor icons, bold (https://phosphoricons.com, MIT), registered as an icon theme path. -->
+<gresources>
+  <gresource prefix="/io/github/ralphnajm/AgentReview/icons/scalable/actions">
+    <file>ph-arrow-up-right-symbolic.svg</file>
+    <file>ph-arrow-u-up-left-symbolic.svg</file>
+    <file>ph-arrow-u-up-right-symbolic.svg</file>
+    <file>ph-cursor-symbolic.svg</file>
+    <file>ph-minus-symbolic.svg</file>
+    <file>ph-note-blank-symbolic.svg</file>
+    <file>ph-plus-symbolic.svg</file>
+    <file>ph-scribble-symbolic.svg</file>
+    <file>ph-square-symbolic.svg</file>
+    <file>ph-text-t-symbolic.svg</file>
+  </gresource>
+</gresources>

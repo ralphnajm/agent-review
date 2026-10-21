@@ -256,7 +256,8 @@ src/
     reviews_dialog.rs  posted reviews and their status
     commit_picker.rs   the commit history, to pick a commit to review
     file_list.rs, project_switcher.rs
-data/           desktop entry, AppStream metadata, icons, the built whiteboard
+data/           desktop entry, AppStream metadata, icons (the app's, and Phosphor's for the
+                whiteboard's tools), the built whiteboard
 whiteboard/     the whiteboard's page: Excalidraw over the screenshot, driven by the app
 ```
 

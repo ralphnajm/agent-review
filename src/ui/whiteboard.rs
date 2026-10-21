@@ -14,7 +14,7 @@ use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
-use gtk::{cairo, gdk, gio, glib};
+use gtk::{gdk, gio, glib};
 use serde::Deserialize;
 use webkit6::prelude::*;
 
@@ -54,6 +54,18 @@ impl Tool {
         }
     }
 
+    /// Its icon, from Phosphor.
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Select => "ph-cursor-symbolic",
+            Self::Marker => "ph-scribble-symbolic",
+            Self::Arrow => "ph-arrow-up-right-symbolic",
+            Self::Box => "ph-square-symbolic",
+            Self::Sticky => "ph-note-blank-symbolic",
+            Self::Text => "ph-text-t-symbolic",
+        }
+    }
+
     fn tooltip(self) -> &'static str {
         match self {
             Self::Select => "Select: move, resize or restyle what you drew; double-click to edit text",
@@ -66,24 +78,38 @@ impl Tool {
     }
 }
 
-/// The colours of the marker, arrows, boxes and text, by name.
-pub const COLORS: [(&str, &str); 4] =
-    [("Red", "#e01b24"), ("Blue", "#1c71d8"), ("Green", "#26a269"), ("Black", "#1a1a1a")];
-
 /// What the page last said of the board.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct State {
     drawing: bool,
     undo: bool,
     redo: bool,
+    /// 1 when the screenshot is the size of the page it was taken of.
+    zoom: f64,
 }
 
-/// A message from the page: `{ "ready": true }` once loaded, then the state
-/// of the board whenever it changes, or a key's action.
+impl Default for State {
+    fn default() -> Self {
+        Self { drawing: false, undo: false, redo: false, zoom: 1.0 }
+    }
+}
+
+/// A screenshot for the page: a PNG `data:` URL, and how many of its pixels
+/// make one of the page's.
+struct Screenshot {
+    png: String,
+    scale: f64,
+}
+
+/// A message from the page: `{ "ready": true }` once loaded, `{ "shown":
+/// true }` once it shows a screenshot, then the state of the board whenever
+/// it changes, or a key's action.
 #[derive(Debug, Deserialize)]
 struct Message {
     #[serde(default)]
     ready: bool,
+    #[serde(default)]
+    shown: bool,
     /// `done` for Ctrl+Enter, `discard` for Esc.
     action: Option<String>,
     tool: Option<String>,
@@ -93,6 +119,7 @@ struct Message {
     undo: bool,
     #[serde(default)]
     redo: bool,
+    zoom: Option<f64>,
 }
 
 /// The drawing, from the page.
@@ -109,13 +136,17 @@ type ToolCallback = Box<dyn Fn(Tool)>;
 pub struct Whiteboard(Rc<Inner>);
 
 struct Inner {
-    root: gtk::Box,
+    root: gtk::Overlay,
+    board: gtk::Box,
+    /// The screenshot as a picture, over the page until it shows it, so
+    /// freezing the page changes nothing on screen.
+    frozen: gtk::Picture,
     /// Created with the first screenshot, as web views are costly.
     view: RefCell<Option<webkit6::WebView>>,
     /// Whether the page can take a screenshot.
     ready: Cell<bool>,
-    /// A screenshot waiting for the page, as a PNG `data:` URL.
-    queued: RefCell<Option<String>>,
+    /// A screenshot waiting for the page.
+    queued: RefCell<Option<Screenshot>>,
     tool: Cell<Tool>,
     state: Cell<State>,
     on_change: RefCell<Vec<Box<dyn Fn()>>>,
@@ -127,10 +158,15 @@ struct Inner {
 impl Whiteboard {
     pub fn new() -> Self {
         register_scheme();
-        let root = gtk::Box::builder().hexpand(true).vexpand(true).build();
+        let board = gtk::Box::builder().hexpand(true).vexpand(true).build();
+        let frozen = gtk::Picture::builder().can_shrink(true).content_fit(gtk::ContentFit::Contain).build();
+        let root = gtk::Overlay::builder().child(&board).hexpand(true).vexpand(true).build();
+        root.add_overlay(&frozen);
         root.add_css_class("whiteboard");
         let this = Self(Rc::new(Inner {
             root,
+            board,
+            frozen,
             view: RefCell::default(),
             ready: Cell::new(false),
             queued: RefCell::default(),
@@ -150,7 +186,7 @@ impl Whiteboard {
         this
     }
 
-    pub fn widget(&self) -> &gtk::Box {
+    pub fn widget(&self) -> &gtk::Overlay {
         &self.0.root
     }
 
@@ -186,24 +222,33 @@ impl Whiteboard {
         }
     }
 
-    /// What's drawn next takes `color`, as `#rrggbb`, and so does what's selected.
-    pub fn set_color(&self, color: &str) {
-        self.run(&format!("board.setColor({color:?})"));
-    }
-
-    /// Starts over on `screenshot`, with the marker.
-    pub fn set_image(&self, screenshot: &gdk::Texture) {
+    /// Starts over on `screenshot` of a page, with the marker, showing it
+    /// the size of the page: `scale` of its pixels make one of the page's.
+    pub fn set_image(&self, screenshot: &gdk::Texture, scale: f64) {
+        self.0.frozen.set_paintable(Some(screenshot));
+        self.0.frozen.set_visible(true);
         let png = format!("data:image/png;base64,{}", glib::base64_encode(&screenshot.save_to_png_bytes()));
+        let screenshot = Screenshot { png, scale };
         self.0.state.set(State::default());
         self.0.tool.set(Tool::Marker);
         self.tool_changed(Tool::Marker);
         self.changed();
         self.view();
         if self.0.ready.get() {
-            self.load(png);
+            self.load(screenshot);
         } else {
-            self.0.queued.replace(Some(png));
+            self.0.queued.replace(Some(screenshot));
         }
+    }
+
+    /// Zooms in, or out, by a step, around the middle of the board.
+    fn zoom(&self, zoom_in: bool) {
+        self.run(&format!("board.zoom({})", if zoom_in { 1 } else { -1 }));
+    }
+
+    /// Back to the screenshot as big as the page, where it was.
+    fn reset_zoom(&self) {
+        self.run("board.resetZoom()");
     }
 
     /// Puts the keyboard on the whiteboard.
@@ -284,15 +329,16 @@ impl Whiteboard {
         });
     }
 
-    fn load(&self, png: String) {
+    fn load(&self, screenshot: Screenshot) {
         let Some(view) = self.0.view.borrow().clone() else { return };
         let arguments = glib::VariantDict::new(None);
-        arguments.insert("png", png);
+        arguments.insert("png", screenshot.png);
+        arguments.insert("scale", screenshot.scale);
         arguments.insert("tool", self.0.tool.get().name());
         glib::spawn_future_local(async move {
             let loaded = view
                 .call_async_javascript_function_future(
-                    "await board.load(png, tool);",
+                    "await board.load(png, scale, tool);",
                     Some(&arguments.end()),
                     None,
                     None,
@@ -315,9 +361,13 @@ impl Whiteboard {
         if message.ready {
             self.0.ready.set(true);
             self.run(&format!("board.setDark({})", adw::StyleManager::default().is_dark()));
-            if let Some(png) = self.0.queued.take() {
-                self.load(png);
+            if let Some(screenshot) = self.0.queued.take() {
+                self.load(screenshot);
             }
+            return;
+        }
+        if message.shown {
+            self.0.frozen.set_visible(false);
             return;
         }
         if let Some(action) = message.action {
@@ -334,7 +384,8 @@ impl Whiteboard {
         if let Some(tool) = tool.filter(|&tool| self.0.tool.replace(tool) != tool) {
             self.tool_changed(tool);
         }
-        self.0.state.set(State { drawing: message.drawing, undo: message.undo, redo: message.redo });
+        let zoom = message.zoom.unwrap_or(self.0.state.get().zoom);
+        self.0.state.set(State { drawing: message.drawing, undo: message.undo, redo: message.redo, zoom });
         self.changed();
     }
 
@@ -373,7 +424,7 @@ impl Whiteboard {
             }
         });
         view.load_uri(PAGE);
-        self.0.root.append(&view);
+        self.0.board.append(&view);
         self.0.view.replace(Some(view.clone()));
         view
     }
@@ -413,16 +464,14 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// The whiteboard's tools, colours, Undo and Redo, in a bar of icons.
+/// The whiteboard's tools, zoom, Undo and Redo, in a bar of icons.
 pub fn build_tools(board: &Whiteboard) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     bar.add_css_class("whiteboard-tools");
     let tools = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     let mut buttons: Vec<(Tool, gtk::ToggleButton)> = Vec::new();
     for tool in Tool::ALL {
-        let icon = gtk::DrawingArea::builder().content_width(18).content_height(18).build();
-        icon.set_draw_func(move |area, cr, width, height| draw_tool_icon(area, cr, tool, width, height));
-        let button = gtk::ToggleButton::builder().child(&icon).tooltip_text(tool.tooltip()).build();
+        let button = gtk::ToggleButton::builder().icon_name(tool.icon()).tooltip_text(tool.tooltip()).build();
         button.add_css_class("flat");
         button.add_css_class("tool-button");
         button.set_group(buttons.first().map(|(_, first)| first));
@@ -444,35 +493,37 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
     bar.append(&tools);
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
-    let colors = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    colors.set_margin_start(4);
-    colors.set_margin_end(4);
-    let mut first: Option<gtk::ToggleButton> = None;
-    for (name, color) in COLORS {
-        let button = gtk::ToggleButton::builder().tooltip_text(name).valign(gtk::Align::Center).build();
-        button.add_css_class("swatch");
-        button.add_css_class(&format!("swatch-{}", name.to_lowercase()));
-        button.set_group(first.as_ref());
-        let board = board.clone();
-        button.connect_toggled(move |button| {
-            if button.is_active() {
-                board.set_color(color);
-            }
-        });
-        colors.append(&button);
-        first.get_or_insert(button);
-    }
-    if let Some(first) = first {
-        first.set_active(true);
-    }
-    bar.append(&colors);
-    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
-    let undo = gtk::Button::builder().icon_name("edit-undo-symbolic").tooltip_text("Undo (Ctrl+Z)").build();
-    let redo = gtk::Button::builder().icon_name("edit-redo-symbolic").tooltip_text("Redo (Ctrl+Shift+Z)").build();
-    for (button, redo_it) in [(&undo, false), (&redo, true)] {
+    let button = |icon: &str, tooltip: &str| {
+        let button = gtk::Button::builder().icon_name(icon).tooltip_text(tooltip).build();
         button.add_css_class("flat");
         button.add_css_class("tool-button");
+        button
+    };
+    let zoom_out = button("ph-minus-symbolic", "Zoom Out (Ctrl+−)");
+    let zoom_in = button("ph-plus-symbolic", "Zoom In (Ctrl++)");
+    // Wide enough for 3000%, so the buttons stay put.
+    let level = gtk::Label::builder().label("100%").width_chars(5).build();
+    level.add_css_class("numeric");
+    level.add_css_class("zoom-level");
+    let reset = gtk::Button::builder().child(&level).tooltip_text("Back to the Page's Size (Ctrl+0)").build();
+    reset.add_css_class("flat");
+    reset.add_css_class("tool-button");
+    for (button, zoom_in) in [(&zoom_out, Some(false)), (&reset, None), (&zoom_in, Some(true))] {
+        let weak = board.weak();
+        button.connect_clicked(move |_| {
+            let Some(board) = weak.upgrade().map(Whiteboard) else { return };
+            match zoom_in {
+                Some(zoom_in) => board.zoom(zoom_in),
+                None => board.reset_zoom(),
+            }
+        });
+        bar.append(button);
+    }
+    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+    let undo = button("ph-arrow-u-up-left-symbolic", "Undo (Ctrl+Z)");
+    let redo = button("ph-arrow-u-up-right-symbolic", "Redo (Ctrl+Shift+Z)");
+    for (button, redo_it) in [(&undo, false), (&redo, true)] {
         let weak = board.weak();
         button.connect_clicked(move |_| {
             if let Some(inner) = weak.upgrade() {
@@ -487,69 +538,10 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
             let board = Whiteboard(inner);
             buttons.0.set_sensitive(board.can_undo());
             buttons.1.set_sensitive(board.can_redo());
+            level.set_label(&format!("{:.0}%", board.0.state.get().zoom * 100.0));
         }
     };
     update();
     board.connect_change(update);
     bar
-}
-
-/// Draws the icon of `tool` in the button's text colour.
-fn draw_tool_icon(area: &gtk::DrawingArea, cr: &cairo::Context, tool: Tool, width: i32, height: i32) {
-    let color = area.color();
-    cr.set_source_rgba(
-        f64::from(color.red()),
-        f64::from(color.green()),
-        f64::from(color.blue()),
-        f64::from(color.alpha()),
-    );
-    // Laid out on an 18 × 18 grid.
-    let scale = f64::from(width.min(height)) / 18.0;
-    cr.scale(scale, scale);
-    cr.set_line_width(1.8);
-    cr.set_line_cap(cairo::LineCap::Round);
-    cr.set_line_join(cairo::LineJoin::Round);
-    match tool {
-        Tool::Select => {
-            cr.move_to(4.5, 2.5);
-            cr.line_to(4.5, 14.5);
-            cr.line_to(7.6, 11.6);
-            cr.line_to(9.8, 16.0);
-            cr.line_to(11.8, 15.0);
-            cr.line_to(9.6, 10.7);
-            cr.line_to(13.8, 10.4);
-            cr.close_path();
-        }
-        Tool::Marker => {
-            cr.move_to(2.5, 13.0);
-            cr.curve_to(5.0, 5.0, 7.5, 5.0, 9.0, 9.5);
-            cr.curve_to(10.5, 14.0, 13.0, 14.0, 15.5, 5.0);
-        }
-        Tool::Arrow => {
-            cr.move_to(3.0, 15.0);
-            cr.line_to(15.0, 3.0);
-            cr.move_to(8.0, 3.0);
-            cr.line_to(15.0, 3.0);
-            cr.line_to(15.0, 10.0);
-        }
-        Tool::Box => cr.rectangle(2.5, 4.0, 13.0, 10.0),
-        Tool::Sticky => {
-            cr.move_to(3.0, 3.0);
-            cr.line_to(15.0, 3.0);
-            cr.line_to(15.0, 11.0);
-            cr.line_to(11.0, 15.0);
-            cr.line_to(3.0, 15.0);
-            cr.close_path();
-            cr.move_to(15.0, 11.0);
-            cr.line_to(11.0, 11.0);
-            cr.line_to(11.0, 15.0);
-        }
-        Tool::Text => {
-            cr.move_to(3.5, 4.0);
-            cr.line_to(14.5, 4.0);
-            cr.move_to(9.0, 4.0);
-            cr.line_to(9.0, 15.0);
-        }
-    }
-    let _ = cr.stroke();
 }

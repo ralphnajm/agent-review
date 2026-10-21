@@ -1,11 +1,18 @@
 //! Embeds the whiteboard's files (`data/whiteboard`, built from `whiteboard/`)
-//! in the binary, as `WHITEBOARD`: their paths and contents.
+//! in the binary, as `WHITEBOARD`: their paths and contents; and compiles the
+//! app's icons (`data/icons/phosphor`) into a resource bundle.
 
 use std::fmt::Write as _;
 use std::path::Path;
 use std::{env, fs};
 
 fn main() {
+    glib_build_tools::compile_resources(
+        &["data/icons/phosphor"],
+        "data/icons/phosphor/icons.gresource.xml",
+        "icons.gresource",
+    );
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/whiteboard");
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = Vec::new();

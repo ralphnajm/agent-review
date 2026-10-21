@@ -5,6 +5,24 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.6] - 2026-10-21
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Added
+
+- Zoom on the whiteboard: **−** and **+** in its bar, with the zoom between them. Click the zoom, or press Ctrl+0, to
+  see the screenshot as big as the page again.
+
+### Changed
+
+- The whiteboard's tools, Undo and Redo have new icons, from [Phosphor](https://phosphoricons.com).
+- The colours are gone from the whiteboard's bar: select what you drew to change its colour.
+
+### Fixed
+
+- Drawing on the page no longer flashes or zooms out: the screenshot stays exactly where the page was, at its size.
+
 ## [1.0.0-alpha.5] - 2026-10-21
 
 A pre-release: Check for Updates offers it on the **Pre-releases** channel.

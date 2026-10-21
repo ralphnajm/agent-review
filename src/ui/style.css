@@ -245,18 +245,7 @@ button.history-button { min-height: 28px; padding: 0 6px; border-radius: 6px; fo
 /* Its tools, in place of the browser's bar. */
 .whiteboard-tools button.tool-button { min-height: 28px; min-width: 28px; padding: 0 5px; border-radius: 6px; }
 .whiteboard-tools button.tool-button:checked { background: alpha(@accent_bg_color, 0.18); color: @accent_color; }
-/* The colours of the whiteboard's marker, arrows, boxes and text. */
-button.swatch {
-  min-width: 18px;
-  min-height: 18px;
-  padding: 0;
-  border-radius: 999px;
-  box-shadow: inset 0 0 0 1px alpha(black, 0.2);
-}
-button.swatch:checked { box-shadow: 0 0 0 2px @window_bg_color, 0 0 0 4px @accent_color; }
-button.swatch-red { background: #e01b24; }
-button.swatch-blue { background: #1c71d8; }
-button.swatch-green { background: #26a269; }
-button.swatch-black { background: #1a1a1a; }
+/* The zoom between − and +, as plain as the icons around it. */
+.whiteboard-tools .zoom-level { font-weight: normal; }
 
 .chip.done-chip { background: alpha(@success_color, 0.16); color: @success_color; }

@@ -2,9 +2,9 @@
 //
 // The app drives it through `window.board` and hears back through the
 // `whiteboard` script message handler, as JSON: `{ "ready": true }` once it
-// can take a screenshot, then `{ tool, drawing, undo, redo }` whenever one of
-// them changes, and `{ "action": "done" }` or `{ "action": "discard" }` for
-// Ctrl+Enter and Esc. Excalidraw's own toolbar and menus are hidden: the app's bar
+// can take a screenshot, `{ "shown": true }` once it shows one, then
+// `{ tool, drawing, undo, redo, zoom }` whenever one of them changes, and
+// `{ "action": "done" }` or `{ "action": "discard" }` for Ctrl+Enter and Esc. Excalidraw's own toolbar and menus are hidden: the app's bar
 // has the tools, and the panel of the selected element stays.
 
 import { useEffect, useState } from "react";
@@ -15,7 +15,6 @@ import {
   FONT_FAMILY,
   convertToExcalidrawElements,
   exportToBlob,
-  newElementWith,
   sceneCoordsToViewportCoords,
 } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
@@ -33,15 +32,24 @@ const TOOLS = {
 
 const STICKY_PAPER = "#fff0a0";
 const STICKY_INK = "#1e1e1e";
-/** A sticky note's side, at a regular screen's scale. */
+/** A sticky note's side, in the page's pixels. */
 const STICKY_SIDE = 180;
 
+/** What's drawn takes red, until the user picks another colour for it. */
+const COLOR = "#e01b24";
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 30;
+
 let api = null;
-/** The screenshot: its id among Excalidraw's files, its element, and how many of its pixels make a pixel of the scene. */
+/**
+ * The screenshot: its id among Excalidraw's files, its element, and how many
+ * of its pixels make one of the page's, which is a pixel of the scene.
+ */
 let screenshot = null;
-/** The colour the user picked, for what they draw next. */
-let color = "#e01b24";
-/** While a new sticky note's text is being typed, which turns the ink dark: whether typing began. */
+/**
+ * While a new sticky note's text is being typed, in dark ink: whether typing
+ * began, and the colour to go back to after.
+ */
 let stickyTyping = null;
 let posted = {};
 let show = null;
@@ -62,6 +70,7 @@ const report = (elements, appState) => {
     drawing: elements.some((e) => !e.isDeleted && e.id !== screenshot?.element),
     undo: !disabled("undo"),
     redo: !disabled("redo"),
+    zoom: appState.zoom.value,
   };
   if (Object.keys(state).some((key) => state[key] !== posted[key])) {
     posted = state;
@@ -77,6 +86,7 @@ const onChange = (elements, appState) => {
     if (appState.editingTextElement) {
       stickyTyping.began = true;
     } else if (stickyTyping.began) {
+      const { color } = stickyTyping;
       stickyTyping = null;
       api.updateScene({ appState: { currentItemStrokeColor: color }, captureUpdate: CaptureUpdateAction.NEVER });
     }
@@ -107,7 +117,7 @@ const onPointerUp = (tool, pointerDown) => {
       customData: { sticky: true },
     },
   ]);
-  stickyTyping = { began: false };
+  stickyTyping = { began: false, color: api.getAppState().currentItemStrokeColor };
   api.updateScene({
     elements: [...api.getSceneElementsIncludingDeleted(), note],
     appState: { selectedElementIds: { [note.id]: true }, currentItemStrokeColor: STICKY_INK },
@@ -162,14 +172,7 @@ function Board() {
       initialData={{ ...scene.data, appState: { ...scene.data.appState, theme: dark ? "dark" : "light" } }}
       excalidrawAPI={(next) => {
         api = next;
-        // Once laid out, the screenshot fills the board. Excalidraw sets its tool up by then too.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            api.setActiveTool(TOOLS[scene.tool]);
-            const element = api.getSceneElements().find((e) => e.id === screenshot.element);
-            api.scrollToContent(element, { fitToViewport: true, viewportZoomFactor: 1, animate: false });
-          }),
-        );
+        shown(scene);
       }}
       onChange={onChange}
       onPointerUp={onPointerUp}
@@ -192,12 +195,32 @@ function Board() {
   );
 }
 
+const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+/**
+ * Tells the app once the board shows the screenshot, for it to stop showing
+ * its own copy over it. Excalidraw sets its tool up by then too.
+ */
+const shown = async (scene) => {
+  const image = new Image();
+  image.src = scene.data.files[screenshot.fileId].dataURL;
+  await image.decode().catch(() => {});
+  for (let i = 0; i < 3; i++) {
+    await frame();
+  }
+  api.setActiveTool(TOOLS[scene.tool]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  post({ shown: true });
+};
+
 window.board = {
-  /** Starts over on a screenshot, given as a PNG `data:` URL, with `tool`. */
-  async load(png, tool) {
+  /**
+   * Starts over on a screenshot, given as a PNG `data:` URL, with `tool`.
+   * `scale` of its pixels make one of the page's: it shows as big as the
+   * page, where the page was.
+   */
+  async load(png, scale, tool) {
     const [width, height] = await imageSize(png);
-    // A regular screen's pixels, so lines and text look the same on high-resolution screenshots.
-    const scale = Math.max(1, width / 1400);
     const fileId = `screenshot-${Date.now()}`;
     const [element] = convertToExcalidrawElements([
       { type: "image", fileId, x: 0, y: 0, width: width / scale, height: height / scale, locked: true },
@@ -212,12 +235,15 @@ window.board = {
         elements: [{ ...element, status: "saved" }],
         files: { [fileId]: { id: fileId, dataURL: png, mimeType: "image/png", created: Date.now() } },
         appState: {
-          currentItemStrokeColor: color,
+          currentItemStrokeColor: COLOR,
           currentItemStrokeWidth: 4,
           currentItemRoughness: 0,
           currentItemFontFamily: FONT_FAMILY.Nunito,
           currentItemFontSize: 20,
           viewBackgroundColor: "#ffffff",
+          zoom: { value: 1 },
+          scrollX: 0,
+          scrollY: 0,
         },
       },
     });
@@ -227,26 +253,31 @@ window.board = {
     api?.setActiveTool(TOOLS[tool]);
   },
 
-  /** What the user draws next takes `hex`, and so do the selected elements. */
-  setColor(hex) {
-    color = hex;
-    if (!api) {
+  /** Zooms in, or out for a negative `direction`, by a step around the middle of the board. */
+  zoom(direction) {
+    const appState = api?.getAppState();
+    if (!appState) {
       return;
     }
-    const appState = api.getAppState();
-    const elements = api.getSceneElementsIncludingDeleted();
-    // A sticky note keeps its paper: its text takes the colour.
-    const stickies = new Set(elements.filter((e) => e.customData?.sticky).map((e) => e.id));
-    const selected = (e) =>
-      appState.selectedElementIds[e.id] || (e.containerId && stickies.has(e.containerId) && appState.selectedElementIds[e.containerId]);
-    const changed = elements.some((e) => selected(e) && !stickies.has(e.id));
+    const current = appState.zoom.value;
+    // Steps of 10% up to 100%, and of 25% above.
+    const step = current < 1 || (current === 1 && direction < 0) ? 0.1 : 0.25;
+    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((current + direction * step) / step) * step));
+    // What's in the middle stays there: a point shows at (x + scroll) * zoom.
+    const [x, y] = [appState.width / 2, appState.height / 2];
     api.updateScene({
-      elements: changed
-        ? elements.map((e) => (selected(e) && !stickies.has(e.id) ? newElementWith(e, { strokeColor: hex }) : e))
-        : undefined,
-      appState: { currentItemStrokeColor: hex },
-      captureUpdate: changed ? CaptureUpdateAction.IMMEDIATELY : CaptureUpdateAction.NEVER,
+      appState: {
+        zoom: { value: next },
+        scrollX: appState.scrollX + x / next - x / current,
+        scrollY: appState.scrollY + y / next - y / current,
+      },
+      captureUpdate: CaptureUpdateAction.NEVER,
     });
+  },
+
+  /** Shows the screenshot as big as the page, where the page was. */
+  resetZoom() {
+    api?.updateScene({ appState: { zoom: { value: 1 }, scrollX: 0, scrollY: 0 }, captureUpdate: CaptureUpdateAction.NEVER });
   },
 
   setDark(dark) {
@@ -293,7 +324,8 @@ window.board = {
 
 // The keys that finish the drawing, before Excalidraw sees them: Ctrl+Enter
 // adds it to the review, and Esc throws it away, unless it has something
-// else to stop first, such as typing or a selection. Ctrl+Y is Redo too.
+// else to stop first, such as typing or a selection. Ctrl+Y is Redo too, and
+// Ctrl+0 shows the screenshot as big as the page.
 window.addEventListener(
   "keydown",
   (event) => {
@@ -306,6 +338,8 @@ window.addEventListener(
       action = "done";
     } else if (event.key === "y" && event.ctrlKey && !event.shiftKey) {
       window.board.redo();
+    } else if (event.key === "0" && event.ctrlKey) {
+      window.board.resetZoom();
     } else if (
       event.key === "Escape" &&
       !appState.editingTextElement &&
