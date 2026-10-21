@@ -4,6 +4,7 @@
 #   make install PREFIX=~/.local       install for the current user (shows up in app search)
 #   sudo make install                  install system-wide into /usr/local
 #   make rpm / make deb                build a Fedora / Ubuntu package
+#   make whiteboard                    rebuild data/whiteboard from whiteboard/ (needs Node)
 
 APP_ID   := io.github.ralphnajm.AgentReview
 BIN      := agent-review
@@ -14,7 +15,7 @@ CARGO    ?= cargo
 BINDIR   := $(DESTDIR)$(PREFIX)/bin
 DATADIR  := $(DESTDIR)$(PREFIX)/share
 
-.PHONY: all build release run test fmt fmt-check lint validate check-version check install uninstall rpm deb clean
+.PHONY: all build release run test fmt fmt-check lint validate check-version check whiteboard whiteboard-check install uninstall rpm deb clean
 
 all: release
 
@@ -48,6 +49,15 @@ check-version:
 	scripts/check-version.sh
 
 check: fmt-check lint test validate check-version
+
+# The whiteboard's page is built from whiteboard/ and committed in data/whiteboard, so that building
+# the app doesn't need Node. Rebuild it after changing whiteboard/; CI checks that it matches.
+whiteboard:
+	cd whiteboard && npm ci --no-audit --no-fund && npm run build
+
+whiteboard-check: whiteboard
+	@git diff --quiet -- data/whiteboard && test -z "$$(git ls-files --others --exclude-standard data/whiteboard)" \
+		|| { echo "data/whiteboard is out of date: run make whiteboard and commit it"; git status --short data/whiteboard; exit 1; }
 
 install: release
 	install -Dm755 target/release/$(BIN) $(BINDIR)/$(BIN)

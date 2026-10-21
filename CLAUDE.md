@@ -6,6 +6,7 @@ Native GTK 4 / libadwaita app (Rust) for reviewing the versions coding agents as
 
 - `make check`: fmt check, clippy `-D warnings` (pedantic), tests, desktop/AppStream validation. Run before finishing any change.
 - `cargo run -- <repo path>`: run against a repository.
+- `make whiteboard`: rebuild the whiteboard's page (Excalidraw, in `whiteboard/`) into `data/whiteboard`, which the app embeds. It's committed built so the app builds without Node: after changing `whiteboard/`, run it and commit the result. CI fails when they differ.
 - If the build dependencies live in a toolbox, run commands through `toolbox run -c <toolbox> …`.
 
 ## Changelog and releases

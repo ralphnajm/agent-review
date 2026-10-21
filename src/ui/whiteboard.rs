@@ -1,353 +1,415 @@
-//! Drawing over a screenshot of the product: marker strokes, arrows, boxes,
-//! sticky notes and text. The user's comment sends the result to the agent as
+//! Drawing over a screenshot of the product, on Excalidraw: a marker, arrows,
+//! boxes, sticky notes and text, which can be selected, moved, resized,
+//! restyled and deleted. The user's comment sends the result to the agent as
 //! one image.
 //!
-//! Everything is kept in the screenshot's own pixels, and drawn scaled to fit
-//! the widget, so the exported image matches what the user saw.
+//! Excalidraw runs in a web view, on a page embedded in the app (built from
+//! `whiteboard/` into `data/whiteboard`) and served as
+//! `agent-review://whiteboard/`. The page's own toolbar is hidden: the tools
+//! are in the app's bar, which drives the page through `window.board` and
+//! hears back from it through the `whiteboard` script message handler.
 
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
 
-use gtk::prelude::*;
-use gtk::{cairo, gdk, glib, pango};
+use adw::prelude::*;
+use gtk::{cairo, gdk, gio, glib};
+use serde::Deserialize;
+use webkit6::prelude::*;
 
-/// What a drag on the whiteboard draws.
+mod assets {
+    include!(concat!(env!("OUT_DIR"), "/whiteboard.rs"));
+}
+
+const SCHEME: &str = "agent-review";
+const PAGE: &str = "agent-review://whiteboard/index.html";
+
+/// What a click or drag on the whiteboard does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
+    /// Selects, moves and resizes what's drawn; a double click edits text.
+    Select,
     Marker,
     Arrow,
     Box,
-    /// A yellow note with text, placed with a click.
+    /// A yellow note, placed with a click, to type on.
     Sticky,
     /// Text on its own, placed with a click.
     Text,
 }
 
-type Rgb = (f64, f64, f64);
+impl Tool {
+    const ALL: [Self; 6] = [Self::Select, Self::Marker, Self::Arrow, Self::Box, Self::Sticky, Self::Text];
+
+    /// Its name on the page.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Select => "select",
+            Self::Marker => "marker",
+            Self::Arrow => "arrow",
+            Self::Box => "box",
+            Self::Sticky => "sticky",
+            Self::Text => "text",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::Select => "Select: move, resize or restyle what you drew; double-click to edit text",
+            Self::Marker => "Marker",
+            Self::Arrow => "Arrow",
+            Self::Box => "Box",
+            Self::Sticky => "Sticky Note: click where it goes, then type",
+            Self::Text => "Text: click where it goes, then type",
+        }
+    }
+}
 
 /// The colours of the marker, arrows, boxes and text, by name.
-pub const COLORS: [(&str, Rgb); 4] = [
-    ("Red", (0.88, 0.11, 0.14)),
-    ("Blue", (0.11, 0.44, 0.85)),
-    ("Green", (0.15, 0.6, 0.33)),
-    ("Black", (0.1, 0.1, 0.1)),
-];
+pub const COLORS: [(&str, &str); 4] =
+    [("Red", "#e01b24"), ("Blue", "#1c71d8"), ("Green", "#26a269"), ("Black", "#1a1a1a")];
 
-/// A sticky note's paper, top to bottom, and its curled corner.
-const STICKY_TOP: Rgb = (1.0, 0.94, 0.55);
-const STICKY_BOTTOM: Rgb = (0.99, 0.87, 0.38);
-const STICKY_CURL: Rgb = (0.91, 0.78, 0.3);
-
-#[derive(Debug, Clone)]
-enum Item {
-    Stroke { color: Rgb, points: Vec<(f64, f64)> },
-    Arrow { color: Rgb, from: (f64, f64), to: (f64, f64) },
-    Box { color: Rgb, from: (f64, f64), to: (f64, f64) },
-    Sticky { at: (f64, f64), text: String },
-    Text { color: Rgb, at: (f64, f64), text: String },
+/// What the page last said of the board.
+#[derive(Debug, Clone, Copy, Default)]
+struct State {
+    drawing: bool,
+    undo: bool,
+    redo: bool,
 }
+
+/// A message from the page: `{ "ready": true }` once loaded, then the state
+/// of the board whenever it changes, or a key's action.
+#[derive(Debug, Deserialize)]
+struct Message {
+    #[serde(default)]
+    ready: bool,
+    /// `done` for Ctrl+Enter, `discard` for Esc.
+    action: Option<String>,
+    tool: Option<String>,
+    #[serde(default)]
+    drawing: bool,
+    #[serde(default)]
+    undo: bool,
+    #[serde(default)]
+    redo: bool,
+}
+
+/// The drawing, from the page.
+#[derive(Debug, Deserialize)]
+struct Exported {
+    /// The screenshot drawn on, as a base64 PNG.
+    png: String,
+    texts: Vec<String>,
+}
+
+type ToolCallback = Box<dyn Fn(Tool)>;
 
 #[derive(Clone)]
 pub struct Whiteboard(Rc<Inner>);
 
 struct Inner {
-    area: gtk::DrawingArea,
-    image: RefCell<Option<cairo::ImageSurface>>,
-    items: RefCell<Vec<Item>>,
-    /// What Undo took back, last first, for Redo; drawing anything new forgets it.
-    undone: RefCell<Vec<Item>>,
-    /// The item a drag is drawing.
-    drawing: RefCell<Option<Item>>,
-    /// Where the drag started, in the widget.
-    drag_start: Cell<(f64, f64)>,
+    root: gtk::Box,
+    /// Created with the first screenshot, as web views are costly.
+    view: RefCell<Option<webkit6::WebView>>,
+    /// Whether the page can take a screenshot.
+    ready: Cell<bool>,
+    /// A screenshot waiting for the page, as a PNG `data:` URL.
+    queued: RefCell<Option<String>>,
     tool: Cell<Tool>,
-    color: Cell<Rgb>,
-    /// Asks for the text of a sticky note or text, where it goes.
-    popover: gtk::Popover,
-    entry: gtk::Entry,
-    /// Where the text being typed goes, in the screenshot.
-    pending: Cell<Option<(f64, f64)>>,
+    state: Cell<State>,
     on_change: RefCell<Vec<Box<dyn Fn()>>>,
+    on_tool: RefCell<Vec<ToolCallback>>,
+    on_done: RefCell<Option<Box<dyn Fn()>>>,
+    on_discard: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl Whiteboard {
     pub fn new() -> Self {
-        // Focusable, for the whiteboard's keys.
-        let area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).focusable(true).build();
-        area.add_css_class("whiteboard");
-        area.set_cursor_from_name(Some("crosshair"));
-        let entry = gtk::Entry::builder().width_chars(28).build();
-        let popover = gtk::Popover::builder().child(&entry).autohide(true).build();
-        popover.set_parent(&area);
-
+        register_scheme();
+        let root = gtk::Box::builder().hexpand(true).vexpand(true).build();
+        root.add_css_class("whiteboard");
         let this = Self(Rc::new(Inner {
-            area,
-            image: RefCell::default(),
-            items: RefCell::default(),
-            undone: RefCell::default(),
-            drawing: RefCell::default(),
-            drag_start: Cell::new((0.0, 0.0)),
+            root,
+            view: RefCell::default(),
+            ready: Cell::new(false),
+            queued: RefCell::default(),
             tool: Cell::new(Tool::Marker),
-            color: Cell::new(COLORS[0].1),
-            popover,
-            entry,
-            pending: Cell::new(None),
+            state: Cell::default(),
             on_change: RefCell::default(),
+            on_tool: RefCell::default(),
+            on_done: RefCell::default(),
+            on_discard: RefCell::default(),
         }));
-
         let weak = this.weak();
-        this.0.area.set_draw_func(move |_, cr, width, height| {
+        adw::StyleManager::default().connect_dark_notify(move |style| {
             if let Some(inner) = weak.upgrade() {
-                Self(inner).draw(cr, f64::from(width), f64::from(height));
+                Self(inner).run(&format!("board.setDark({})", style.is_dark()));
             }
-        });
-
-        let drag = gtk::GestureDrag::new();
-        let weak = this.weak();
-        drag.connect_drag_begin(move |_, x, y| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).begin(x, y);
-            }
-        });
-        let weak = this.weak();
-        drag.connect_drag_update(move |_, dx, dy| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).update(dx, dy);
-            }
-        });
-        let weak = this.weak();
-        drag.connect_drag_end(move |_, dx, dy| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).end(dx, dy);
-            }
-        });
-        this.0.area.add_controller(drag);
-
-        let weak = this.weak();
-        this.0.entry.connect_activate(move |entry| {
-            let Some(inner) = weak.upgrade() else { return };
-            let text = entry.text().trim().to_owned();
-            inner.popover.popdown();
-            let Some(at) = inner.pending.take().filter(|_| !text.is_empty()) else { return };
-            let item = match inner.tool.get() {
-                Tool::Sticky => Item::Sticky { at, text },
-                _ => Item::Text { color: inner.color.get(), at, text },
-            };
-            Self(inner).push(item);
         });
         this
     }
 
-    pub fn widget(&self) -> &gtk::DrawingArea {
-        &self.0.area
+    pub fn widget(&self) -> &gtk::Box {
+        &self.0.root
     }
 
     fn weak(&self) -> Weak<Inner> {
         Rc::downgrade(&self.0)
     }
 
-    /// Called whenever the drawing changes.
+    /// Called whenever the drawing, or what Undo and Redo can do, changes.
     pub fn connect_change(&self, callback: impl Fn() + 'static) {
         self.0.on_change.borrow_mut().push(Box::new(callback));
     }
 
+    /// Called when the tool changes on the page, as when drawing a box goes
+    /// back to selecting.
+    fn connect_tool(&self, callback: impl Fn(Tool) + 'static) {
+        self.0.on_tool.borrow_mut().push(Box::new(callback));
+    }
+
+    /// Called on Ctrl+Enter on the whiteboard, to add the drawing to the review.
+    pub fn connect_done(&self, callback: impl Fn() + 'static) {
+        self.0.on_done.replace(Some(Box::new(callback)));
+    }
+
+    /// Called on Esc on the whiteboard, when there's nothing else to stop, to
+    /// throw the drawing away.
+    pub fn connect_discard(&self, callback: impl Fn() + 'static) {
+        self.0.on_discard.replace(Some(Box::new(callback)));
+    }
+
     pub fn set_tool(&self, tool: Tool) {
-        self.0.tool.set(tool);
+        if self.0.tool.replace(tool) != tool {
+            self.run(&format!("board.setTool({:?})", tool.name()));
+        }
     }
 
-    pub fn set_color(&self, color: Rgb) {
-        self.0.color.set(color);
+    /// What's drawn next takes `color`, as `#rrggbb`, and so does what's selected.
+    pub fn set_color(&self, color: &str) {
+        self.run(&format!("board.setColor({color:?})"));
     }
 
-    /// Starts over on `screenshot`.
-    pub fn set_image(&self, screenshot: &gdk::Texture) -> Result<(), cairo::Error> {
-        let (width, height) = (screenshot.width(), screenshot.height());
-        let stride = cairo::Format::ARgb32.stride_for_width(u32::try_from(width).unwrap_or(0))?;
-        let mut data = vec![0; usize::try_from(stride * height).unwrap_or(0)];
-        // Textures download in cairo's ARGB32 layout.
-        screenshot.download(&mut data, usize::try_from(stride).unwrap_or(0));
-        let surface = cairo::ImageSurface::create_for_data(data, cairo::Format::ARgb32, width, height, stride)?;
-        self.0.image.replace(Some(surface));
-        self.0.items.borrow_mut().clear();
-        self.0.undone.borrow_mut().clear();
-        self.0.drawing.replace(None);
+    /// Starts over on `screenshot`, with the marker.
+    pub fn set_image(&self, screenshot: &gdk::Texture) {
+        let png = format!("data:image/png;base64,{}", glib::base64_encode(&screenshot.save_to_png_bytes()));
+        self.0.state.set(State::default());
+        self.0.tool.set(Tool::Marker);
+        self.tool_changed(Tool::Marker);
         self.changed();
-        Ok(())
+        self.view();
+        if self.0.ready.get() {
+            self.load(png);
+        } else {
+            self.0.queued.replace(Some(png));
+        }
+    }
+
+    /// Puts the keyboard on the whiteboard.
+    pub fn focus(&self) {
+        if let Some(view) = self.0.view.borrow().as_ref() {
+            view.grab_focus();
+        }
+    }
+
+    /// Whether the keyboard is on the whiteboard, whose page then handles the keys.
+    pub fn has_focus(&self) -> bool {
+        self.0.view.borrow().as_ref().is_some_and(WidgetExt::has_focus)
     }
 
     /// Whether the user drew anything.
     pub fn has_drawing(&self) -> bool {
-        !self.0.items.borrow().is_empty()
+        self.0.state.get().drawing
     }
 
-    /// The text of the sticky notes and text on the whiteboard, in order.
-    pub fn texts(&self) -> Vec<String> {
-        self.0
-            .items
-            .borrow()
-            .iter()
-            .filter_map(|item| match item {
-                Item::Sticky { text, .. } | Item::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    pub fn undo(&self) {
-        let item = self.0.items.borrow_mut().pop();
-        if let Some(item) = item {
-            self.0.undone.borrow_mut().push(item);
-            self.changed();
-        }
-    }
-
-    pub fn redo(&self) {
-        let item = self.0.undone.borrow_mut().pop();
-        if let Some(item) = item {
-            self.0.items.borrow_mut().push(item);
-            self.changed();
-        }
+    fn can_undo(&self) -> bool {
+        self.0.state.get().undo
     }
 
     fn can_redo(&self) -> bool {
-        !self.0.undone.borrow().is_empty()
+        self.0.state.get().redo
+    }
+
+    pub fn undo(&self) {
+        self.run("board.undo()");
+    }
+
+    pub fn redo(&self) {
+        self.run("board.redo()");
     }
 
     /// Saves the screenshot with the drawing on it as a PNG, scaled down to at
-    /// most `max_width` pixels wide.
-    pub fn export(&self, path: &Path, max_width: i32) -> Result<(), String> {
-        let image = self.0.image.borrow();
-        let image = image.as_ref().ok_or("There is no screenshot")?;
-        let (width, height) = (image.width(), image.height());
-        let scale = (f64::from(max_width) / f64::from(width)).min(1.0);
-        #[allow(clippy::cast_possible_truncation)]
-        let (out_width, out_height) =
-            ((f64::from(width) * scale).round() as i32, (f64::from(height) * scale).round() as i32);
-        let mut out =
-            cairo::ImageSurface::create(cairo::Format::ARgb32, out_width, out_height).map_err(|e| e.to_string())?;
-        {
-            let cr = cairo::Context::new(&out).map_err(|e| e.to_string())?;
-            cr.scale(scale, scale);
-            self.paint(&cr, image);
-        }
-        out.flush();
-        let stride = usize::try_from(out.stride()).unwrap_or(0);
-        let data = out.data().map_err(|e| e.to_string())?;
-        let texture = gdk::MemoryTexture::new(
-            out_width,
-            out_height,
-            gdk::MemoryFormat::B8g8r8a8Premultiplied,
-            &glib::Bytes::from(&data[..]),
-            stride,
-        );
+    /// most `max_width` pixels wide; returns the text written on it, in order.
+    pub async fn export(&self, path: &Path, max_width: i32) -> Result<Vec<String>, String> {
+        let view = self.0.view.borrow().clone().ok_or("There is no drawing")?;
+        let arguments = glib::VariantDict::new(None);
+        arguments.insert("maxWidth", max_width);
+        let value = view
+            .call_async_javascript_function_future(
+                "return await board.export(maxWidth);",
+                Some(&arguments.end()),
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let exported: Exported = serde_json::from_str(&value.to_str()).map_err(|e| e.to_string())?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        texture.save_to_png(path).map_err(|e| e.to_string())
+        std::fs::write(path, glib::base64_decode(&exported.png)).map_err(|e| e.to_string())?;
+        Ok(exported.texts)
     }
 
     fn changed(&self) {
-        self.0.area.queue_draw();
         for callback in self.0.on_change.borrow().iter() {
             callback();
         }
     }
 
-    fn push(&self, item: Item) {
-        self.0.undone.borrow_mut().clear();
-        self.0.items.borrow_mut().push(item);
+    fn tool_changed(&self, tool: Tool) {
+        for callback in self.0.on_tool.borrow().iter() {
+            callback(tool);
+        }
+    }
+
+    /// Runs `script` on the page, once it's ready: before, there's nothing to act on.
+    fn run(&self, script: &str) {
+        let Some(view) = self.0.view.borrow().clone().filter(|_| self.0.ready.get()) else { return };
+        view.evaluate_javascript(script, None, None, None::<&gio::Cancellable>, |result| {
+            if let Err(err) = result {
+                eprintln!("agent-review: the whiteboard failed: {err}");
+            }
+        });
+    }
+
+    fn load(&self, png: String) {
+        let Some(view) = self.0.view.borrow().clone() else { return };
+        let arguments = glib::VariantDict::new(None);
+        arguments.insert("png", png);
+        arguments.insert("tool", self.0.tool.get().name());
+        glib::spawn_future_local(async move {
+            let loaded = view
+                .call_async_javascript_function_future(
+                    "await board.load(png, tool);",
+                    Some(&arguments.end()),
+                    None,
+                    None,
+                )
+                .await;
+            if let Err(err) = loaded {
+                eprintln!("agent-review: could not put the screenshot on the whiteboard: {err}");
+            }
+        });
+    }
+
+    fn receive(&self, message: &str) {
+        let message: Message = match serde_json::from_str(message) {
+            Ok(message) => message,
+            Err(err) => {
+                eprintln!("agent-review: unexpected message from the whiteboard: {err}");
+                return;
+            }
+        };
+        if message.ready {
+            self.0.ready.set(true);
+            self.run(&format!("board.setDark({})", adw::StyleManager::default().is_dark()));
+            if let Some(png) = self.0.queued.take() {
+                self.load(png);
+            }
+            return;
+        }
+        if let Some(action) = message.action {
+            let callback = match action.as_str() {
+                "done" => &self.0.on_done,
+                _ => &self.0.on_discard,
+            };
+            if let Some(callback) = callback.borrow().as_ref() {
+                callback();
+            }
+            return;
+        }
+        let tool = message.tool.as_deref().and_then(|name| Tool::ALL.into_iter().find(|t| t.name() == name));
+        if let Some(tool) = tool.filter(|&tool| self.0.tool.replace(tool) != tool) {
+            self.tool_changed(tool);
+        }
+        self.0.state.set(State { drawing: message.drawing, undo: message.undo, redo: message.redo });
         self.changed();
     }
 
-    /// How the screenshot fits the widget: its scale, then its offset.
-    fn fit(&self) -> Option<(f64, (f64, f64))> {
-        let image = self.0.image.borrow();
-        let image = image.as_ref()?;
-        let (width, height) = (f64::from(self.0.area.width()), f64::from(self.0.area.height()));
-        let (image_width, image_height) = (f64::from(image.width()), f64::from(image.height()));
-        let scale = (width / image_width).min(height / image_height);
-        Some((scale, ((width - image_width * scale) / 2.0, (height - image_height * scale) / 2.0)))
-    }
-
-    /// A point of the widget, in the screenshot's pixels.
-    fn to_image(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let (scale, (left, top)) = self.fit()?;
-        Some(((x - left) / scale, (y - top) / scale))
-    }
-
-    fn begin(&self, x: f64, y: f64) {
-        self.0.drag_start.set((x, y));
-        let Some(at) = self.to_image(x, y) else { return };
-        let color = self.0.color.get();
-        let item = match self.0.tool.get() {
-            Tool::Marker => Item::Stroke { color, points: vec![at] },
-            Tool::Arrow => Item::Arrow { color, from: at, to: at },
-            Tool::Box => Item::Box { color, from: at, to: at },
-            Tool::Sticky | Tool::Text => return,
-        };
-        self.0.drawing.replace(Some(item));
-    }
-
-    fn update(&self, dx: f64, dy: f64) {
-        let (x, y) = self.0.drag_start.get();
-        let Some(at) = self.to_image(x + dx, y + dy) else { return };
-        if let Some(item) = self.0.drawing.borrow_mut().as_mut() {
-            match item {
-                Item::Stroke { points, .. } => points.push(at),
-                Item::Arrow { to, .. } | Item::Box { to, .. } => *to = at,
-                Item::Sticky { .. } | Item::Text { .. } => {}
+    /// The web view, created on first use.
+    fn view(&self) -> webkit6::WebView {
+        if let Some(view) = self.0.view.borrow().as_ref() {
+            return view.clone();
+        }
+        let content = webkit6::UserContentManager::new();
+        content.register_script_message_handler("whiteboard", None);
+        let weak = self.weak();
+        content.connect_script_message_received(Some("whiteboard"), move |_, value| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).receive(&value.to_str());
             }
+        });
+        let view = webkit6::WebView::builder()
+            // Nothing on the whiteboard is kept.
+            .network_session(&webkit6::NetworkSession::new_ephemeral())
+            .user_content_manager(&content)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        if let Some(settings) = WebViewExt::settings(&view) {
+            settings.set_enable_developer_extras(cfg!(debug_assertions));
+            settings.set_enable_write_console_messages_to_stdout(cfg!(debug_assertions));
         }
-        self.0.area.queue_draw();
-    }
-
-    fn end(&self, dx: f64, dy: f64) {
-        let (x, y) = self.0.drag_start.get();
-        match self.0.drawing.take() {
-            // A click with the arrow or box tools draws nothing.
-            Some(item @ (Item::Arrow { .. } | Item::Box { .. })) if dx.hypot(dy) < 4.0 => drop(item),
-            Some(item) => self.push(item),
-            None => {
-                let Some(at) = self.to_image(x + dx, y + dy) else { return };
-                self.0.pending.set(Some(at));
-                let entry = &self.0.entry;
-                entry.set_text("");
-                entry.set_placeholder_text(Some(if self.0.tool.get() == Tool::Sticky {
-                    "Sticky note, then Enter"
-                } else {
-                    "Text, then Enter"
-                }));
-                #[allow(clippy::cast_possible_truncation)]
-                let point = gdk::Rectangle::new((x + dx) as i32, (y + dy) as i32, 1, 1);
-                self.0.popover.set_pointing_to(Some(&point));
-                self.0.popover.popup();
-                entry.grab_focus();
+        // Excalidraw has its own menu.
+        view.connect_context_menu(|_, _, _| true);
+        let weak = self.weak();
+        view.connect_web_process_terminated(move |view, reason| {
+            eprintln!("agent-review: the whiteboard stopped: {reason:?}");
+            if let Some(inner) = weak.upgrade() {
+                inner.ready.set(false);
+                view.load_uri(PAGE);
             }
-        }
+        });
+        view.load_uri(PAGE);
+        self.0.root.append(&view);
+        self.0.view.replace(Some(view.clone()));
+        view
     }
+}
 
-    fn draw(&self, cr: &cairo::Context, width: f64, height: f64) {
-        cr.set_source_rgb(0.5, 0.5, 0.5);
-        cr.rectangle(0.0, 0.0, width, height);
-        let _ = cr.fill();
-        let (Some((scale, (left, top))), Some(image)) = (self.fit(), self.0.image.borrow().clone()) else { return };
-        cr.translate(left, top);
-        cr.scale(scale, scale);
-        self.paint(cr, &image);
-        if let Some(item) = self.0.drawing.borrow().as_ref() {
-            draw_item(cr, item, unit(&image));
-        }
+/// Serves the whiteboard's page as `agent-review://whiteboard/`.
+fn register_scheme() {
+    thread_local!(static REGISTERED: Cell<bool> = const { Cell::new(false) });
+    if REGISTERED.replace(true) {
+        return;
     }
-
-    /// Paints the screenshot and the drawing in the screenshot's pixels.
-    fn paint(&self, cr: &cairo::Context, image: &cairo::ImageSurface) {
-        let _ = cr.set_source_surface(image, 0.0, 0.0);
-        let _ = cr.paint();
-        let unit = unit(image);
-        for item in self.0.items.borrow().iter() {
-            draw_item(cr, item, unit);
+    let Some(context) = webkit6::WebContext::default() else { return };
+    if let Some(security) = context.security_manager() {
+        security.register_uri_scheme_as_secure(SCHEME);
+        security.register_uri_scheme_as_cors_enabled(SCHEME);
+    }
+    context.register_uri_scheme(SCHEME, |request| {
+        let path = request.path().unwrap_or_default();
+        let path = path.trim_start_matches('/');
+        match assets::WHITEBOARD.iter().find(|(name, _)| *name == path) {
+            Some(&(_, data)) => {
+                let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(data));
+                request.finish(&stream, i64::try_from(data.len()).unwrap_or(-1), Some(content_type(path)));
+            }
+            None => request.finish_error(&mut glib::Error::new(gio::IOErrorEnum::NotFound, &format!("No {path}"))),
         }
+    });
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("html") => "text/html",
+        Some("js") => "text/javascript",
+        Some("css") => "text/css",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
     }
 }
 
@@ -356,20 +418,15 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     bar.add_css_class("whiteboard-tools");
     let tools = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    let mut first: Option<gtk::ToggleButton> = None;
-    for (tool, tooltip) in [
-        (Tool::Marker, "Marker"),
-        (Tool::Arrow, "Arrow"),
-        (Tool::Box, "Box"),
-        (Tool::Sticky, "Sticky Note: click where it goes"),
-        (Tool::Text, "Text: click where it goes"),
-    ] {
+    let mut buttons: Vec<(Tool, gtk::ToggleButton)> = Vec::new();
+    for tool in Tool::ALL {
         let icon = gtk::DrawingArea::builder().content_width(18).content_height(18).build();
         icon.set_draw_func(move |area, cr, width, height| draw_tool_icon(area, cr, tool, width, height));
-        let button = gtk::ToggleButton::builder().child(&icon).tooltip_text(tooltip).build();
+        let button = gtk::ToggleButton::builder().child(&icon).tooltip_text(tool.tooltip()).build();
         button.add_css_class("flat");
         button.add_css_class("tool-button");
-        button.set_group(first.as_ref());
+        button.set_group(buttons.first().map(|(_, first)| first));
+        button.set_active(tool == Tool::Marker);
         let board = board.clone();
         button.connect_toggled(move |button| {
             if button.is_active() {
@@ -377,11 +434,13 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
             }
         });
         tools.append(&button);
-        first.get_or_insert(button);
+        buttons.push((tool, button));
     }
-    if let Some(first) = first {
-        first.set_active(true);
-    }
+    board.connect_tool(move |tool| {
+        if let Some((_, button)) = buttons.iter().find(|(t, _)| *t == tool) {
+            button.set_active(true);
+        }
+    });
     bar.append(&tools);
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
 
@@ -426,29 +485,13 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
     let update = move || {
         if let Some(inner) = weak.upgrade() {
             let board = Whiteboard(inner);
-            buttons.0.set_sensitive(board.has_drawing());
+            buttons.0.set_sensitive(board.can_undo());
             buttons.1.set_sensitive(board.can_redo());
         }
     };
     update();
     board.connect_change(update);
-
-    let hint = util_hint();
-    bar.append(&hint);
     bar
-}
-
-/// What to do next, at the end of the bar.
-fn util_hint() -> gtk::Label {
-    let hint = gtk::Label::builder()
-        .label("Draw on the screenshot, then press Done · Esc discards it")
-        .hexpand(true)
-        .xalign(1.0)
-        .ellipsize(pango::EllipsizeMode::End)
-        .build();
-    hint.add_css_class("dim-label");
-    hint.add_css_class("caption");
-    hint
 }
 
 /// Draws the icon of `tool` in the button's text colour.
@@ -467,6 +510,16 @@ fn draw_tool_icon(area: &gtk::DrawingArea, cr: &cairo::Context, tool: Tool, widt
     cr.set_line_cap(cairo::LineCap::Round);
     cr.set_line_join(cairo::LineJoin::Round);
     match tool {
+        Tool::Select => {
+            cr.move_to(4.5, 2.5);
+            cr.line_to(4.5, 14.5);
+            cr.line_to(7.6, 11.6);
+            cr.line_to(9.8, 16.0);
+            cr.line_to(11.8, 15.0);
+            cr.line_to(9.6, 10.7);
+            cr.line_to(13.8, 10.4);
+            cr.close_path();
+        }
         Tool::Marker => {
             cr.move_to(2.5, 13.0);
             cr.curve_to(5.0, 5.0, 7.5, 5.0, 9.0, 9.5);
@@ -499,127 +552,4 @@ fn draw_tool_icon(area: &gtk::DrawingArea, cr: &cairo::Context, tool: Tool, widt
         }
     }
     let _ = cr.stroke();
-}
-
-/// The size of a pixel on a regular screen, in the screenshot's pixels, so
-/// lines and text look the same on high-resolution screenshots.
-fn unit(image: &cairo::ImageSurface) -> f64 {
-    (f64::from(image.width()) / 1400.0).max(1.0)
-}
-
-fn draw_item(cr: &cairo::Context, item: &Item, unit: f64) {
-    cr.save().ok();
-    cr.set_line_cap(cairo::LineCap::Round);
-    cr.set_line_join(cairo::LineJoin::Round);
-    cr.set_line_width(4.0 * unit);
-    match item {
-        Item::Stroke { color, points } => {
-            set_color(cr, *color);
-            if let Some(&(x, y)) = points.first() {
-                cr.move_to(x, y);
-                // A single point still shows, as a dot.
-                cr.line_to(x, y);
-            }
-            for &(x, y) in points.iter().skip(1) {
-                cr.line_to(x, y);
-            }
-            let _ = cr.stroke();
-        }
-        Item::Arrow { color, from, to } => {
-            set_color(cr, *color);
-            cr.move_to(from.0, from.1);
-            cr.line_to(to.0, to.1);
-            let angle = (to.1 - from.1).atan2(to.0 - from.0);
-            for side in [-1.0, 1.0] {
-                let wing = angle + std::f64::consts::PI - side * 0.45;
-                cr.move_to(to.0, to.1);
-                cr.line_to(to.0 + 20.0 * unit * wing.cos(), to.1 + 20.0 * unit * wing.sin());
-            }
-            let _ = cr.stroke();
-        }
-        Item::Box { color, from, to } => {
-            set_color(cr, *color);
-            cr.rectangle(from.0.min(to.0), from.1.min(to.1), (to.0 - from.0).abs(), (to.1 - from.1).abs());
-            let _ = cr.stroke();
-        }
-        Item::Sticky { at, text } => draw_sticky(cr, *at, text, unit),
-        Item::Text { color, at, text } => {
-            let layout = text_layout(cr, text, "Sans Bold", 22.0 * unit, None);
-            cr.move_to(at.0, at.1);
-            // A white outline keeps the text readable on any background.
-            pangocairo::functions::layout_path(cr, &layout);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.set_line_width(5.0 * unit);
-            let _ = cr.stroke_preserve();
-            set_color(cr, *color);
-            let _ = cr.fill();
-        }
-    }
-    cr.restore().ok();
-}
-
-/// A square note of yellow paper, a little askew, its corner curling up,
-/// with `text` on it.
-fn draw_sticky(cr: &cairo::Context, at: (f64, f64), text: &str, unit: f64) {
-    let (side, pad, curl) = (170.0 * unit, 16.0 * unit, 22.0 * unit);
-    let layout = text_layout(cr, text, "Sans", 17.0 * unit, Some(side - 2.0 * pad));
-    let height = side.max(f64::from(layout.pixel_size().1) + 2.0 * pad + curl);
-    cr.translate(at.0 + side / 2.0, at.1 + height / 2.0);
-    cr.rotate(-0.035);
-    cr.translate(-side / 2.0, -height / 2.0);
-    // The outline, without the corner that curls up.
-    let paper = |cr: &cairo::Context, dx: f64, dy: f64| {
-        cr.move_to(dx, dy);
-        cr.line_to(side + dx, dy);
-        cr.line_to(side + dx, height - curl + dy);
-        cr.line_to(side - curl + dx, height + dy);
-        cr.line_to(dx, height + dy);
-        cr.close_path();
-    };
-    // A soft shadow, deeper towards the bottom.
-    for step in 1..=5 {
-        let offset = f64::from(step) * unit;
-        paper(cr, offset * 0.6, offset * 1.2);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.045);
-        let _ = cr.fill();
-    }
-    paper(cr, 0.0, 0.0);
-    let gradient = cairo::LinearGradient::new(0.0, 0.0, 0.0, height);
-    gradient.add_color_stop_rgb(0.0, STICKY_TOP.0, STICKY_TOP.1, STICKY_TOP.2);
-    gradient.add_color_stop_rgb(1.0, STICKY_BOTTOM.0, STICKY_BOTTOM.1, STICKY_BOTTOM.2);
-    let _ = cr.set_source(&gradient);
-    let _ = cr.fill();
-    // The sticky strip along the top.
-    cr.rectangle(0.0, 0.0, side, 18.0 * unit);
-    cr.set_source_rgba(0.55, 0.42, 0.0, 0.07);
-    let _ = cr.fill();
-    // The curled corner.
-    cr.move_to(side, height - curl);
-    cr.line_to(side - curl * 0.85, height - curl * 0.85);
-    cr.line_to(side - curl, height);
-    cr.close_path();
-    set_color(cr, STICKY_CURL);
-    let _ = cr.fill();
-    cr.set_source_rgb(0.27, 0.22, 0.04);
-    cr.move_to(pad, pad + 6.0 * unit);
-    pangocairo::functions::show_layout(cr, &layout);
-}
-
-fn set_color(cr: &cairo::Context, (r, g, b): Rgb) {
-    cr.set_source_rgb(r, g, b);
-}
-
-fn text_layout(cr: &cairo::Context, text: &str, font: &str, size: f64, wrap: Option<f64>) -> pango::Layout {
-    let layout = pangocairo::functions::create_layout(cr);
-    let mut font = pango::FontDescription::from_string(font);
-    #[allow(clippy::cast_possible_truncation)]
-    font.set_absolute_size(size * f64::from(pango::SCALE));
-    layout.set_font_description(Some(&font));
-    if let Some(width) = wrap {
-        #[allow(clippy::cast_possible_truncation)]
-        layout.set_width((width * f64::from(pango::SCALE)) as i32);
-        layout.set_wrap(pango::WrapMode::WordChar);
-    }
-    layout.set_text(text);
-    layout
 }

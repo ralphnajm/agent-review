@@ -1,0 +1,17 @@
+{
+  "name": "agent-review-whiteboard",
+  "private": true,
+  "description": "The whiteboard of Agent Review: Excalidraw over a screenshot of the product, bundled into data/whiteboard",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

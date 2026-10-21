@@ -8,7 +8,7 @@
 //! request once. Every file has a single writer, so the two processes never
 //! overwrite each other's changes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -62,12 +62,35 @@ pub struct ReviewRequest {
     /// Where the running product can be opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The earlier request this one takes the place of, such as the version
+    /// whose review the agent addressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<u64>,
 }
 
 impl ReviewRequest {
     pub fn short_id(&self) -> &str {
         self.commit.get(..7).unwrap_or(&self.commit)
     }
+}
+
+/// The requests no later one replaces, oldest first.
+pub fn current_requests(requests: &[ReviewRequest]) -> Vec<ReviewRequest> {
+    let replaced: HashSet<u64> = requests.iter().filter_map(|r| r.replaces).collect();
+    requests.iter().filter(|r| !replaced.contains(&r.id)).cloned().collect()
+}
+
+/// The request that took the place of request `id`, through as many
+/// replacements as were made since, if any.
+pub fn replacement(requests: &[ReviewRequest], id: u64) -> Option<&ReviewRequest> {
+    let mut latest = None;
+    let mut id = id;
+    // Each request only replaces an earlier one, so this ends.
+    while let Some(next) = requests.iter().filter(|r| r.replaces == Some(id) && r.id > id).max_by_key(|r| r.id) {
+        latest = Some(next);
+        id = next.id;
+    }
+    latest
 }
 
 /// What the agent did with a posted review. Written by the MCP server only.
@@ -310,6 +333,7 @@ mod tests {
             body: String::new(),
             base: "fedcba9876543210".into(),
             url: Some("http://localhost:5173".into()),
+            replaces: None,
         };
         assert_eq!(queue.request(request.clone()).unwrap().id, 1);
         assert_eq!(queue.request(request.clone()).unwrap().id, 2);
@@ -317,9 +341,19 @@ mod tests {
         queue.post(None, [comment(1, "One")], 2).unwrap();
         let requests = queue.requests();
         assert_eq!(requests.iter().map(|r| r.id).collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(requests[0], ReviewRequest { id: 1, ..request });
+        assert_eq!(requests[0], ReviewRequest { id: 1, ..request.clone() });
         assert_eq!(requests[0].short_id(), "0123456");
         assert_eq!(queue.load().len(), 1);
+
+        // A request taking the place of another hides it, and is where it leads.
+        let third = queue.request(ReviewRequest { replaces: Some(1), ..request.clone() }).unwrap();
+        let fourth = queue.request(ReviewRequest { replaces: Some(3), ..request }).unwrap();
+        let requests = queue.requests();
+        assert_eq!(requests[2].replaces, Some(1));
+        assert_eq!(current_requests(&requests).iter().map(|r| r.id).collect::<Vec<_>>(), [2, 4]);
+        assert_eq!(replacement(&requests, 1).map(|r| r.id), Some(fourth.id));
+        assert_eq!(replacement(&requests, third.id).map(|r| r.id), Some(fourth.id));
+        assert_eq!(replacement(&requests, 2), None);
     }
 
     #[test]

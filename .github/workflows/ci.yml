@@ -26,6 +26,11 @@ jobs:
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@v2
       - run: make check
+      # The whiteboard's page is committed built: it must match its source.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: make whiteboard-check
 
   deb:
     name: Debian package (Ubuntu 24.04)

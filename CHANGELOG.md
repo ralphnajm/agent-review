@@ -5,6 +5,28 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.5] - 2026-10-21
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Added
+
+- When your agent addresses your review and asks you to review the next version, the new version takes the old one's
+  place: if you have the old one open, Agent Review switches to the new one by itself, keeping your comments and the
+  drawing you were working on, and the old one leaves the list of versions. The agent skill tells agents how.
+
+### Changed
+
+- The whiteboard is now [Excalidraw](https://excalidraw.com). Sticky notes and text are typed right where you put
+  them, instead of in a box that pops up. Select anything you drew to move it, resize it, change its colour, font
+  size or layer, or delete it; double-click a note or text to edit it. The **Select** tool is first in the bar, and
+  the panel for what you selected shows beside it. The screenshot keeps its true colours in dark mode.
+- The hint at the end of the whiteboard's bar is gone.
+
+### Removed
+
+- The list of drawings not posted yet, next to the pencil above the page.
+
 ## [1.0.0-alpha.4] - 2026-10-20
 
 A pre-release: Check for Updates offers it on the **Pre-releases** channel.

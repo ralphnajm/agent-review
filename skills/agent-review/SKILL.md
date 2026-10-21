@@ -41,7 +41,8 @@ edit: each request puts a banner in front of the user, so it should mean
    library or a command-line tool. By default the version covers everything
    since the branch left its upstream, or the commit alone when there is no
    upstream; pass `base` (a commit or revision such as `HEAD~3`) when the work
-   spans more commits than that.
+   spans more commits than that. The reply gives the request's number: you
+   pass it as `replaces` when you hand over the next version.
 4. **Tell the user** in a sentence that the version is ready in Agent Review,
    then stop. Don't wait or poll for the review: the user will ask you to pull
    it when they have posted it.
@@ -106,8 +107,12 @@ When the user asks you to pull, fetch or check their review:
    - Then hand over the next version: amend the draft commit (`git commit
      --amend`), or add commits on top of it if the user prefers to keep the
      history; make sure the product runs the new code; and call
-     `request_review` again. The user's comments and reviewed files carry over
-     to the new version, and files that changed open again for another look.
+     `request_review` again with `replaces`: the number of the review request
+     you addressed, which `get_review` gives with each version ("review
+     request 3"). The new version takes the old one's place: if the user has
+     it open, Agent Review switches to it by itself. Their comments and
+     reviewed files carry over, and files that changed open again for another
+     look.
 
    For someone else's work, the user usually wants the review passed on. Do
    that with the tools you have, for example:

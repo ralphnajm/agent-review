@@ -1,0 +1,33 @@
+/* The page is the board. */
+html, body, #root { margin: 0; height: 100%; overflow: hidden; }
+
+/* The app's bar has the tools, Undo and Redo: Excalidraw's own toolbar, menus, hints and footer are hidden. */
+.excalidraw .App-toolbar-content,
+.excalidraw .App-toolbar,
+.excalidraw .main-menu-trigger,
+.excalidraw .layer-ui__wrapper__top-right,
+.excalidraw .default-sidebar-trigger,
+.excalidraw .sidebar-trigger,
+.excalidraw .HintViewer,
+.excalidraw .layer-ui__wrapper__footer,
+.excalidraw .layer-ui__wrapper__footer-left,
+.excalidraw .layer-ui__wrapper__footer-right,
+.excalidraw .footer-center,
+.excalidraw .help-icon,
+.excalidraw .welcome-screen-center,
+.excalidraw .welcome-screen-decor,
+.excalidraw .App-bottom-bar,
+.excalidraw .mobile-misc-tools-container {
+  display: none !important;
+}
+
+/* The panel of the selected element, only while something is selected. */
+body:not(.selecting) .excalidraw .App-menu__left,
+body:not(.selecting) .excalidraw .selected-shape-actions {
+  display: none !important;
+}
+
+/* Dark mode is for the panels: the screenshot and the drawing keep their true colours, as the agent sees them. */
+.excalidraw.theme--dark {
+  --theme-filter: none;
+}

@@ -226,16 +226,6 @@ impl ReviewState {
         id
     }
 
-    pub fn remove_product_note(&mut self, id: u64) {
-        self.product.retain(|n| n.id != id);
-    }
-
-    /// Puts back a note removed with [`Self::remove_product_note`].
-    pub fn restore_product_note(&mut self, note: Note) {
-        let position = self.product.iter().position(|n| n.id > note.id).unwrap_or(self.product.len());
-        self.product.insert(position, note);
-    }
-
     pub fn unsent_product_notes(&self) -> usize {
         self.product.iter().filter(|n| n.sent_at.is_none()).count()
     }
@@ -349,10 +339,6 @@ mod tests {
         review.set_sent(&[page], Some(3));
         assert_eq!((review.unsent_product_notes(), review.unsent()), (0, 1));
 
-        let note = review.product[0].clone();
-        review.remove_product_note(page);
-        assert_eq!(review.product, []);
-        review.restore_product_note(note);
         let json = serde_json::to_string(&review).unwrap();
         assert_eq!(serde_json::from_str::<ReviewState>(&json).unwrap(), review);
         review.clear();

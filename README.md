@@ -49,15 +49,18 @@ you open a product to review.
 - **Versions:** your agent asks you to review a version: a commit, compared to where its branch
   left its upstream, with the product running from it. The current version opens by itself, a
   banner announces newer ones, and the button above the file panel lists them all, marking
-  those you reviewed and those the repository has moved past. Comments and reviewed files carry
-  over when the agent amends the version and asks again.
+  those you reviewed and those the repository has moved past. When the agent addresses your
+  review and asks again, the new version takes the old one's place: if you have it open, Agent
+  Review switches to it by itself, and your comments and reviewed files carry over.
 - **Product:** the version's product opens inside Agent Review, in an embedded browser with
   back, forward and reload. **Product** and **Code** at the top switch between it and the code.
   Logins to your product are remembered, and right-click **Inspect Element** opens the web
   inspector.
-- **Whiteboard:** the pencil above the page freezes it into a screenshot to draw on with a
-  marker, arrows, boxes, sticky notes and text in four colours, with undo and redo. **Done** adds
-  it to your review: the screenshot reaches your agent as an image, with what you wrote on it.
+- **Whiteboard:** the pencil above the page freezes it into a screenshot to draw on, with
+  [Excalidraw](https://excalidraw.com): a marker, arrows, boxes, sticky notes and text you type
+  right where you put them. Select anything to move, resize, restyle, reorder or delete it.
+  **Done** adds it to your review: the screenshot reaches your agent as an image, with what you
+  wrote on it.
 - **Code:** every file the version changed in one scrolling view, like a pull request. Each
   file's header sticks to the top while you scroll through it, and clicking a file in the file
   panel jumps straight to it. Syntax highlighted, with old and new line numbers, find across
@@ -217,12 +220,18 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgtksourceview-5-dev libwebkitg
 | `make check` | rustfmt check, clippy (pedantic, warnings as errors), tests, and desktop/AppStream validation |
 | `make fmt` | Format the code |
 | `make release` | Optimised build (thin LTO, stripped) |
+| `make whiteboard` | Rebuild the whiteboard's page from `whiteboard/` into `data/whiteboard` (needs Node) |
 
 `scripts/demo-repo.sh` creates a small demo project with an agent's uncommitted work in
 `target/demo/shelf`, for trying things out and taking screenshots.
 
-CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04 and builds the `.deb` and
-`.rpm` packages for every push and pull request.
+The whiteboard is a small web page around Excalidraw, in `whiteboard/`. It is committed built,
+in `data/whiteboard`, and embedded in the app, so building the app doesn't need Node: after
+changing `whiteboard/`, run `make whiteboard` and commit the result.
+
+CI (`.github/workflows/ci.yml`) runs `make check` on Ubuntu 24.04, checks that
+`data/whiteboard` matches `whiteboard/`, and builds the `.deb` and `.rpm` packages for every
+push and pull request.
 
 ### Project layout
 
@@ -247,7 +256,8 @@ src/
     reviews_dialog.rs  posted reviews and their status
     commit_picker.rs   the commit history, to pick a commit to review
     file_list.rs, project_switcher.rs
-data/           desktop entry, AppStream metadata, icons
+data/           desktop entry, AppStream metadata, icons, the built whiteboard
+whiteboard/     the whiteboard's page: Excalidraw over the screenshot, driven by the app
 ```
 
 ### Releasing

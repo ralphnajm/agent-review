@@ -31,7 +31,8 @@ else's work (a commit, a branch, a pull request), check it out, run it, and call
 whose it is and a base it is compared to. When the user asks you to pull, fetch or check their review, call \
 get_review, then do what they ask with it: address each comment and call resolve_comments with the ids of those you \
 addressed, or pass the review on, for example to the pull request. When you address a review of your own version, \
-amend the draft commit or add commits on top of it, and call request_review again.";
+amend the draft commit or add commits on top of it, and call request_review again with replaces set to the request \
+of the version you addressed, so the new version takes its place.";
 
 /// Serves requests from stdin until it closes.
 pub fn serve() -> Result<()> {
@@ -127,6 +128,18 @@ impl Server {
         let info = repo.commit(&commit)?;
         let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
         let url = text("url");
+        let queue = (self.queue_for)(&repo.root);
+        let replaces = match arguments.get("replaces") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let id = value.as_u64().context("replaces must be the number of a review request")?;
+                anyhow::ensure!(
+                    queue.requests().iter().any(|r| r.id == id),
+                    "There is no review request {id} to replace"
+                );
+                Some(id)
+            }
+        };
         let request = ReviewRequest {
             id: 0,
             requested_at: crate::core::now(),
@@ -135,23 +148,37 @@ impl Server {
             body: info.body,
             base,
             url: url.map(str::to_owned),
+            replaces,
         };
-        let request = (self.queue_for)(&repo.root).request(request).context("Could not save the review request")?;
+        let request = queue.request(request).context("Could not save the review request")?;
 
         let since = if request.base == git::EMPTY_TREE {
             "all of its changes".to_owned()
         } else {
             format!("the changes since {}", request.base.get(..7).unwrap_or(&request.base))
         };
-        let mut text =
-            format!("Asked the user to review version {} ({}): {since}", request.short_id(), request.subject);
+        let mut text = format!(
+            "Asked the user to review version {} ({}) as request {}: {since}",
+            request.short_id(),
+            request.subject,
+            request.id
+        );
         if let Some(url) = &request.url {
             let _ = write!(text, ", and the product running at {url}");
         }
-        text.push_str(
+        if let Some(replaced) = request.replaces {
+            let _ = write!(
+                text,
+                ". It takes the place of request {replaced}: if the user has that one open, Agent Review switches \
+                 to this one, keeping their comments"
+            );
+        }
+        let _ = write!(
+            text,
             ". They review it in Agent Review and post their comments when done. When they ask you to, call \
              get_review. To address their comments, amend the draft commit or add commits on top of it, then call \
-             request_review again.",
+             request_review again with replaces: {}.",
+            request.id
         );
         if repo.has_uncommitted_changes().unwrap_or(false) {
             text.push_str(
@@ -245,7 +272,11 @@ fn render(root: &Path, comments: &[(Option<&ReviewedCommit>, &PostedComment)]) -
             None => text.push_str("## Uncommitted changes\n\n"),
             Some(commit) => {
                 let what = if commit.base.is_some() { "Version" } else { "Commit" };
-                let _ = writeln!(text, "## {what} {} ({})\n", commit.id, commit.subject);
+                let _ = write!(text, "## {what} {} ({})", commit.id, commit.subject);
+                if let Some(request) = commit.request {
+                    let _ = write!(text, ", review request {request}");
+                }
+                text.push_str("\n\n");
             }
         }
         // The running product's comments have no path, so they come first.
@@ -345,6 +376,13 @@ fn tools() -> Value {
                         "description": "What to compare the version to, when the default does not cover the work: \
                             a commit or revision such as HEAD~3, or for a branch or pull request, the branch it \
                             goes into, such as origin/main. The version is compared to where their histories meet.",
+                    },
+                    "replaces": {
+                        "type": "integer",
+                        "description": "The review request this version takes the place of, given when you \
+                            requested it and in get_review: usually the one whose review you addressed. If the user \
+                            has it open, Agent Review switches to the new version by itself, keeping their \
+                            comments, and the earlier version leaves the list.",
                     },
                     "project": project,
                 },
@@ -527,8 +565,15 @@ mod tests {
         let (text, error) = call(&server, "request_review", &json!({ "base": "nope" }));
         assert!(error && text.contains("nope is not a commit"), "{text}");
         let (text, error) = call(&server, "request_review", &json!({ "title": "PR #42 by John: Add a page" }));
-        assert!(!error && text.contains("(PR #42 by John: Add a page)"), "{text}");
+        assert!(!error && text.contains("(PR #42 by John: Add a page) as request 4"), "{text}");
+        assert!(text.contains("request_review again with replaces: 4."), "{text}");
         assert_eq!(queue.requests()[3].subject, "PR #42 by John: Add a page");
+
+        let (text, error) = call(&server, "request_review", &json!({ "replaces": 4 }));
+        assert!(!error && text.contains("as request 5") && text.contains("takes the place of request 4"), "{text}");
+        assert_eq!(queue.requests()[4].replaces, Some(4));
+        let (text, error) = call(&server, "request_review", &json!({ "replaces": 9 }));
+        assert!(error && text.contains("There is no review request 9 to replace"), "{text}");
     }
 
     #[test]
@@ -548,7 +593,7 @@ mod tests {
             id: "fedcba9876543210".into(),
             subject: "Add a page".into(),
             base: Some("0".into()),
-            request: None,
+            request: Some(3),
         };
         let shot = dir.path().join("shot.png");
         std::fs::write(&shot, b"png").unwrap();
@@ -566,7 +611,7 @@ mod tests {
             .unwrap();
         assert!(uncommitted < commit, "{text}");
         let shown = format!(
-            "## Version fedcba9876543210 (Add a page)\n\n### The running product\n\n- **Page** (id 4): \
+            "## Version fedcba9876543210 (Add a page), review request 3\n\n### The running product\n\n- **Page** (id 4): \
              `http://localhost:5173/`\n  Screenshot, drawn on: `{}`\n  Bigger.\n\n### `page.html`",
             shot.display()
         );

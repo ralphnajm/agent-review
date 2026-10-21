@@ -425,12 +425,6 @@ impl Window {
             }
         });
         let weak = self.weak();
-        w.product.connect_delete(move |id| {
-            if let Some(inner) = weak.upgrade() {
-                Self(inner).delete_product_note(id);
-            }
-        });
-        let weak = self.weak();
         w.review.connect_delete(move |path, id| {
             if let Some(inner) = weak.upgrade() {
                 Self(inner).delete_note(path, id);
@@ -608,18 +602,34 @@ impl Window {
     }
 
     fn reload_posted(&self) {
-        let new_request = {
+        let (new_request, replacement) = {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = state.project.as_mut() else { return };
             project.posted = project.queue.load();
             let known = project.requests.last().map_or(0, |r| r.id);
             project.requests = project.queue.requests();
-            project.requests.last().filter(|r| r.id > known).cloned()
+            let new_request = project.requests.last().filter(|r| r.id > known).cloned();
+            // A new version taking the place of the one under review.
+            let replacement = project
+                .request()
+                .and_then(|open| queue::replacement(&project.requests, open.id))
+                .filter(|r| r.id > known)
+                .cloned();
+            (new_request, replacement)
         };
         if let Some(request) = new_request {
             self.notify_request(&request);
             // Whether it is ready depends on where `HEAD` is now.
             self.check_head();
+        }
+        if let Some(request) = replacement {
+            // It is reviewed in place of the old one, with the drawing in progress on the review.
+            let weak = self.weak();
+            self.0.w.product.commit_drawing(move || {
+                if let Some(inner) = weak.upgrade() {
+                    Self(inner).open_request(request);
+                }
+            });
         }
         self.render_banner();
         self.render_toolbar();
@@ -765,7 +775,7 @@ impl Window {
         let version = project.and_then(|p| p.version.as_ref());
         match project {
             Some(project) => w.versions.set_versions(
-                &project.requests,
+                &queue::current_requests(&project.requests),
                 project.request(),
                 project.head.as_deref(),
                 &project.reviewed_requests(),
@@ -877,7 +887,6 @@ impl Window {
             return;
         }
         if state.product {
-            w.product.set_notes(&project.review.product);
             w.content_stack.set_visible_child_name("product");
             return;
         }
@@ -1098,31 +1107,6 @@ impl Window {
         self.render_toolbar();
     }
 
-    fn delete_product_note(&self, id: u64) {
-        let (note, key) = {
-            let mut state = self.0.state.borrow_mut();
-            let Some(project) = state.project.as_mut() else { return };
-            let note = project.review.product.iter().find(|n| n.id == id).cloned();
-            project.review.remove_product_note(id);
-            project.save_review();
-            (note, project.review_key())
-        };
-        self.render_content();
-        self.render_toolbar();
-
-        let (Some(note), Some(key)) = (note, key) else { return };
-        let toast = adw::Toast::builder().title("Comment deleted").button_label("Undo").build();
-        let weak = self.weak();
-        toast.connect_button_clicked(move |_| {
-            let Some(inner) = weak.upgrade() else { return };
-            let this = Self(inner);
-            this.edit_review(&key, |review| review.restore_product_note(note.clone()));
-            this.render_content();
-            this.render_toolbar();
-        });
-        self.0.w.toasts.add_toast(toast);
-    }
-
     fn delete_note(&self, path: &str, id: u64) {
         let (note, key) = {
             let mut state = self.0.state.borrow_mut();
@@ -1225,7 +1209,15 @@ impl Window {
     /// Queues the unsent comments for the agent to pull through the MCP server.
     fn post_review(&self) {
         // A drawing in progress is part of the review.
-        self.0.w.product.commit_drawing();
+        let weak = self.weak();
+        self.0.w.product.commit_drawing(move || {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).post_unsent();
+            }
+        });
+    }
+
+    fn post_unsent(&self) {
         let Some(feedback) = self.feedback() else { return };
         let ids = feedback.note_ids;
         if ids.is_empty() {
