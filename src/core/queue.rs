@@ -1,6 +1,6 @@
 //! Posted reviews: the comments the user hands to the agent, which pulls them
 //! through the MCP server (see [`crate::core::mcp`]) and resolves them. And
-//! review requests, in which the agent asks the user to review a version.
+//! review requests, in which the agent asks the user to review a commit.
 //!
 //! Each repository has a queue directory under the XDG data dir. The app
 //! writes a review once, when it is posted; the MCP server records what the
@@ -8,7 +8,7 @@
 //! request once. Every file has a single writer, so the two processes never
 //! overwrite each other's changes.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -46,23 +46,21 @@ pub struct PostedReview {
     pub comments: Vec<PostedComment>,
 }
 
-/// A version the agent asks the user to review: the changes from `base` to
-/// `commit`, and the running product at `url`. Written by the MCP server once.
+/// A commit the agent asks the user to review, and the running product at
+/// `url`. Written by the MCP server once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRequest {
     pub id: u64,
     pub requested_at: i64,
     pub commit: String,
     pub subject: String,
-    /// The rest of the commit message.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub body: String,
-    /// The commit the changes are compared to.
-    pub base: String,
+    /// The commit the changes are compared to, when not the commit's parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     /// Where the running product can be opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The earlier request this one takes the place of, such as the version
+    /// The earlier request this one takes the place of, such as the commit
     /// whose review the agent addressed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<u64>,
@@ -74,23 +72,22 @@ impl ReviewRequest {
     }
 }
 
-/// The requests no later one replaces, oldest first.
-pub fn current_requests(requests: &[ReviewRequest]) -> Vec<ReviewRequest> {
-    let replaced: HashSet<u64> = requests.iter().filter_map(|r| r.replaces).collect();
-    requests.iter().filter(|r| !replaced.contains(&r.id)).cloned().collect()
+/// The latest request to review `commit`, if the agent asked.
+pub fn request_for<'a>(requests: &'a [ReviewRequest], commit: &str) -> Option<&'a ReviewRequest> {
+    requests.iter().rev().find(|r| r.commit == commit)
 }
 
-/// The request that took the place of request `id`, through as many
-/// replacements as were made since, if any.
-pub fn replacement(requests: &[ReviewRequest], id: u64) -> Option<&ReviewRequest> {
-    let mut latest = None;
-    let mut id = id;
+/// The commits that request `request` took the place of, latest first,
+/// through as many replacements as were made before it.
+pub fn replaced_commits<'a>(requests: &'a [ReviewRequest], request: &ReviewRequest) -> Vec<&'a str> {
+    let mut commits = Vec::new();
+    let mut next = request.replaces;
     // Each request only replaces an earlier one, so this ends.
-    while let Some(next) = requests.iter().filter(|r| r.replaces == Some(id) && r.id > id).max_by_key(|r| r.id) {
-        latest = Some(next);
-        id = next.id;
+    while let Some(earlier) = next.and_then(|id| requests.iter().find(|r| r.id == id)) {
+        commits.push(earlier.commit.as_str());
+        next = earlier.replaces.filter(|&id| id < earlier.id);
     }
-    latest
+    commits
 }
 
 /// What the agent did with a posted review. Written by the MCP server only.
@@ -330,8 +327,7 @@ mod tests {
             requested_at: 1,
             commit: "0123456789abcdef".into(),
             subject: "Add the parser".into(),
-            body: String::new(),
-            base: "fedcba9876543210".into(),
+            base: Some("fedcba9876543210".into()),
             url: Some("http://localhost:5173".into()),
             replaces: None,
         };
@@ -345,15 +341,16 @@ mod tests {
         assert_eq!(requests[0].short_id(), "0123456");
         assert_eq!(queue.load().len(), 1);
 
-        // A request taking the place of another hides it, and is where it leads.
-        let third = queue.request(ReviewRequest { replaces: Some(1), ..request.clone() }).unwrap();
-        let fourth = queue.request(ReviewRequest { replaces: Some(3), ..request }).unwrap();
+        // A request taking the place of others, through as many as were made.
+        let amended = |commit: &str, replaces| ReviewRequest { commit: commit.into(), replaces, ..request.clone() };
+        let third = queue.request(amended("1111111", Some(1))).unwrap();
+        let fourth = queue.request(amended("2222222", Some(third.id))).unwrap();
         let requests = queue.requests();
-        assert_eq!(requests[2].replaces, Some(1));
-        assert_eq!(current_requests(&requests).iter().map(|r| r.id).collect::<Vec<_>>(), [2, 4]);
-        assert_eq!(replacement(&requests, 1).map(|r| r.id), Some(fourth.id));
-        assert_eq!(replacement(&requests, third.id).map(|r| r.id), Some(fourth.id));
-        assert_eq!(replacement(&requests, 2), None);
+        assert_eq!(replaced_commits(&requests, &fourth), ["1111111", "0123456789abcdef"]);
+        assert_eq!(replaced_commits(&requests, &requests[1]), Vec::<&str>::new());
+        assert_eq!(request_for(&requests, "0123456789abcdef").map(|r| r.id), Some(2));
+        assert_eq!(request_for(&requests, "2222222").map(|r| r.id), Some(fourth.id));
+        assert_eq!(request_for(&requests, "3333333"), None);
     }
 
     #[test]

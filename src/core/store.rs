@@ -3,6 +3,7 @@
 //! Review state is deliberately kept outside the repository so reviewing
 //! never adds files to the working tree being reviewed.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -90,19 +91,38 @@ impl Settings {
     }
 }
 
-/// The review of the versions of the project at `path` compared to commit
-/// `base`. They share a review, so it carries over from one version to the next.
-pub fn load_review(path: &Path, base: &str) -> ReviewState {
-    read_json(&review_file(path, base)).unwrap_or_default()
+/// What a review is kept under: a commit's id, or this for the uncommitted changes.
+pub const WORKTREE_KEY: &str = "worktree";
+
+/// The review of what `key` names in the project at `path`; `None` if there is none yet.
+pub fn find_review(path: &Path, key: &str) -> Option<ReviewState> {
+    read_json(&review_file(path, key))
 }
 
-pub fn save_review(path: &Path, base: &str, review: &ReviewState) -> std::io::Result<()> {
-    write_json(&review_file(path, base), review)
+pub fn load_review(path: &Path, key: &str) -> ReviewState {
+    find_review(path, key).unwrap_or_default()
 }
 
-fn review_file(path: &Path, base: &str) -> PathBuf {
+pub fn save_review(path: &Path, key: &str, review: &ReviewState) -> std::io::Result<()> {
+    write_json(&review_file(path, key), review)
+}
+
+/// The commits of the project at `path` whose every file the user marked reviewed.
+pub fn load_checked(path: &Path) -> BTreeSet<String> {
+    read_json(&reviews_dir(path).join("checked.json")).unwrap_or_default()
+}
+
+pub fn save_checked(path: &Path, checked: &BTreeSet<String>) -> std::io::Result<()> {
+    write_json(&reviews_dir(path).join("checked.json"), checked)
+}
+
+fn review_file(path: &Path, key: &str) -> PathBuf {
+    reviews_dir(path).join(format!("{key}.json"))
+}
+
+fn reviews_dir(path: &Path) -> PathBuf {
     let key = hash::hex(path.as_os_str().as_encoded_bytes());
-    data_dir().join("reviews").join("versions").join(key).join(format!("{base}.json"))
+    data_dir().join("reviews").join("commits").join(key)
 }
 
 /// Where the reviews posted for the repository at `root` are queued.

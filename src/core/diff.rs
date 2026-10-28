@@ -275,8 +275,7 @@ pub fn parse(text: &str) -> Vec<FileDiff> {
     files
 }
 
-/// Builds a diff showing the whole of a new file as added.
-#[cfg(test)]
+/// Builds a diff showing the whole of a new, untracked file as added.
 pub fn untracked(path: &str, content: &[u8]) -> FileDiff {
     let mut diff = FileDiff { new_path: Some(path.to_owned()), is_new: true, ..FileDiff::default() };
     let sample = &content[..content.len().min(8000)];

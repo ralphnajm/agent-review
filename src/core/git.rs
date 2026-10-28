@@ -3,7 +3,7 @@
 //! Shelling out keeps the binary small and honours the user's git
 //! configuration (attributes, `safe.directory`, filters, …) exactly.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -34,6 +34,19 @@ pub struct Commit {
     pub body: String,
 }
 
+impl Commit {
+    pub fn short_id(&self) -> &str {
+        self.id.get(..7).unwrap_or(&self.id)
+    }
+}
+
+/// What is reviewed: the uncommitted changes in the working directory, or a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Worktree,
+    Commit(Commit),
+}
+
 /// A repository, optionally narrowed to a sub-directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repo {
@@ -45,7 +58,7 @@ pub struct Repo {
     pub scope: Option<PathBuf>,
 }
 
-/// What a version changed.
+/// What a commit, or the working directory, changed.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     /// The files changed, by path.
@@ -135,6 +148,58 @@ impl Repo {
         Ok(!self.run(&["status", "--porcelain", "--untracked-files=normal"])?.is_empty())
     }
 
+    /// The uncommitted changes: everything in the working directory that
+    /// differs from `HEAD`, untracked files included.
+    pub fn worktree_snapshot(&self) -> Result<Snapshot> {
+        let mut args = DIFF_ARGS.to_vec();
+        let head = self.head();
+        args.push(head.as_deref().unwrap_or(EMPTY_TREE));
+        let mut diffs = parse_diffs(&self.run(&args)?);
+        let untracked = self.run(&["ls-files", "-z", "--others", "--exclude-standard"])?;
+        for path in untracked.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            let path = String::from_utf8_lossy(path).into_owned();
+            let diff = self.untracked_diff(&path);
+            diffs.insert(path, diff);
+        }
+        let mut files: Vec<ChangedFile> = diffs.values().map(ChangedFile::of).collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(Snapshot { files, diffs })
+    }
+
+    fn untracked_diff(&self, path: &str) -> FileDiff {
+        let full = self.root.join(path);
+        match std::fs::metadata(&full) {
+            Ok(meta) if meta.is_file() && meta.len() <= diff::MAX_TEXT_BYTES => {
+                diff::untracked(path, &std::fs::read(&full).unwrap_or_default())
+            }
+            // Too large to show, or a symlink to a directory, a socket, …: an empty new file.
+            _ => diff::untracked(path, b""),
+        }
+    }
+
+    /// The text of `path` in the working directory. `None` for files too
+    /// large to show, or that are gone.
+    pub fn worktree_text(&self, path: &str) -> Result<Option<String>> {
+        let full = self.root.join(path);
+        match std::fs::metadata(&full) {
+            Ok(meta) if meta.is_file() && meta.len() <= diff::MAX_TEXT_BYTES => {
+                Ok(Some(String::from_utf8_lossy(&std::fs::read(&full)?).into_owned()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// The latest `limit` commits of `HEAD`, newest first. Limited to the
+    /// commits that change the reviewed folder, if any.
+    pub fn history(&self, limit: usize) -> Result<Vec<Commit>> {
+        if self.head().is_none() {
+            return Ok(Vec::new());
+        }
+        let limit = format!("--max-count={limit}");
+        let output = self.run(&["log", "-z", &limit, COMMIT_FORMAT, "HEAD"])?;
+        Ok(output.split(|b| *b == 0).filter_map(parse_commit).collect())
+    }
+
     /// The changes from commit `base` to commit `id`.
     pub fn range_snapshot(&self, base: &str, id: &str) -> Result<Snapshot> {
         check_id(base)?;
@@ -167,8 +232,9 @@ impl Repo {
         self.rev_parse(&format!("{rev}^{{commit}}")).with_context(|| format!("{rev} is not a commit"))
     }
 
-    fn parent(&self, id: &str) -> Option<String> {
-        self.rev_parse(&format!("{id}^"))
+    /// What commit `id` alone is compared to: its parent, or nothing before the first commit.
+    pub fn parent_or_empty(&self, id: &str) -> String {
+        self.rev_parse(&format!("{id}^")).unwrap_or_else(|| EMPTY_TREE.to_owned())
     }
 
     fn rev_parse(&self, rev: &str) -> Option<String> {
@@ -188,18 +254,6 @@ impl Repo {
         parse_commit(&output.stdout).with_context(|| format!("Could not read commit {id}"))
     }
 
-    /// What a review of the unpushed work up to commit `id` compares it to:
-    /// where the branch left its upstream, or else `id`'s parent.
-    pub fn review_base(&self, id: &str) -> String {
-        let output = self.command().args(["merge-base", id, "@{upstream}"]).stderr(Stdio::null()).output();
-        let fork = output
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-            .filter(|fork| !fork.is_empty() && fork != id);
-        fork.or_else(|| self.parent(id)).unwrap_or_else(|| EMPTY_TREE.to_owned())
-    }
-
     /// The text of `path` as commit `id` left it. `None` for files too large
     /// to show, or that the commit deleted.
     pub fn commit_text(&self, id: &str, path: &str) -> Result<Option<String>> {
@@ -209,6 +263,34 @@ impl Repo {
             return Ok(None);
         }
         Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
+
+    /// Directories containing tracked or non-ignored files, for the file watcher.
+    pub fn watched_dirs(&self) -> Result<BTreeSet<PathBuf>> {
+        let output = self.run(&["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
+        let mut dirs = BTreeSet::new();
+        dirs.insert(self.path());
+        for file in output.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+            let mut dir = Path::new(&*String::from_utf8_lossy(file)).parent().map(Path::to_path_buf);
+            while let Some(current) = dir {
+                if current.as_os_str().is_empty() || !dirs.insert(self.root.join(&current)) {
+                    break;
+                }
+                dir = current.parent().map(Path::to_path_buf);
+            }
+        }
+        Ok(dirs)
+    }
+
+    /// Whether git ignores `path`.
+    pub fn is_ignored(&self, path: &Path) -> bool {
+        self.command()
+            .args(["check-ignore", "-q", "--"])
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
     }
 }
 
@@ -223,10 +305,10 @@ fn parse_diffs(output: &[u8]) -> HashMap<String, FileDiff> {
     diff::parse(&String::from_utf8_lossy(output)).into_iter().map(|d| (d.path().to_owned(), d)).collect()
 }
 
-/// Parses `git show` output in [`COMMIT_FORMAT`].
+/// Parses a commit `git show` or `git log` printed in [`COMMIT_FORMAT`].
 fn parse_commit(output: &[u8]) -> Option<Commit> {
     let record = String::from_utf8_lossy(output);
-    let mut fields = record.splitn(5, '\x1f');
+    let mut fields = record.trim_start_matches('\n').splitn(5, '\x1f');
     let id = fields.next().filter(|id| !id.is_empty())?.trim().to_owned();
     let author = fields.next()?.to_owned();
     let time = fields.next()?.parse().unwrap_or(0);
@@ -253,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn reviews_the_unpushed_work_of_a_branch() {
+    fn reads_commits_and_their_changes() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         git(root, &["init", "-q", "-b", "main"]);
@@ -264,8 +346,8 @@ mod tests {
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "Start"]);
         let start = repo.head().unwrap();
-        // No parent and no upstream: everything.
-        assert_eq!(repo.review_base(&start), EMPTY_TREE);
+        // No parent: everything.
+        assert_eq!(repo.parent_or_empty(&start), EMPTY_TREE);
         let initial = repo.range_snapshot(EMPTY_TREE, &start).unwrap();
         assert_eq!(initial.files, [ChangedFile { path: "a.txt".into(), kind: ChangeKind::Added }]);
 
@@ -275,18 +357,20 @@ mod tests {
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "Add b"]);
         let middle = repo.head().unwrap();
-        // No upstream: the parent.
-        assert_eq!(repo.review_base(&middle), start);
+        assert_eq!(repo.parent_or_empty(&middle), start);
         std::fs::write(root.join("a.txt"), "a\nmore\n").unwrap();
         std::fs::write(root.join("c.txt"), "c\n").unwrap();
         git(root, &["add", "."]);
         git(root, &["commit", "-q", "-m", "Add c", "-m", "Details."]);
         let head = repo.head().unwrap();
-        assert_eq!(repo.review_base(&head), middle);
+        assert_eq!(repo.parent_or_empty(&head), middle);
+        let history = repo.history(10).unwrap();
+        let subjects: Vec<&str> = history.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["Add c", "Add b", "Start"]);
+        assert_eq!((history[0].body.as_str(), history[1].body.as_str()), ("Details.", ""));
+        assert_eq!(repo.history(1).unwrap().len(), 1);
 
-        // With an upstream: where the branch left it.
-        git(root, &["branch", "-q", "--set-upstream-to=main"]);
-        assert_eq!(repo.review_base(&head), start);
+        // Compared to an earlier commit: everything since.
         let snapshot = repo.range_snapshot(&start, &head).unwrap();
         let files: Vec<(&str, ChangeKind)> = snapshot.files.iter().map(|f| (f.path.as_str(), f.kind)).collect();
         assert_eq!(
@@ -311,8 +395,18 @@ mod tests {
         assert!(repo.commit("0123456789abcdef0123456789abcdef01234567").is_err());
 
         assert!(!repo.has_uncommitted_changes().unwrap());
+        assert_eq!(repo.worktree_snapshot().unwrap().files, []);
         std::fs::write(root.join("d.txt"), "d\n").unwrap();
+        std::fs::write(root.join("b.txt"), "b\nmore\n").unwrap();
         assert!(repo.has_uncommitted_changes().unwrap());
+        // The uncommitted changes, untracked files included.
+        let worktree = repo.worktree_snapshot().unwrap();
+        let files: Vec<(&str, ChangeKind)> = worktree.files.iter().map(|f| (f.path.as_str(), f.kind)).collect();
+        assert_eq!(files, [("b.txt", ChangeKind::Modified), ("d.txt", ChangeKind::Added)]);
+        assert_eq!(worktree.diffs["d.txt"].additions, 1);
+        assert_eq!(repo.worktree_text("b.txt").unwrap().as_deref(), Some("b\nmore\n"));
+        assert_eq!(repo.worktree_text("gone.txt").unwrap(), None);
+        git(root, &["checkout", "-q", "--", "b.txt"]);
 
         // Limited to a folder: only the changes inside it.
         std::fs::create_dir(root.join("sub")).unwrap();

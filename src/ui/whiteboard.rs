@@ -79,19 +79,11 @@ impl Tool {
 }
 
 /// What the page last said of the board.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct State {
     drawing: bool,
     undo: bool,
     redo: bool,
-    /// 1 when the screenshot is the size of the page it was taken of.
-    zoom: f64,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self { drawing: false, undo: false, redo: false, zoom: 1.0 }
-    }
 }
 
 /// A screenshot for the page: a PNG `data:` URL, and how many of its pixels
@@ -119,7 +111,6 @@ struct Message {
     undo: bool,
     #[serde(default)]
     redo: bool,
-    zoom: Option<f64>,
 }
 
 /// The drawing, from the page.
@@ -239,16 +230,6 @@ impl Whiteboard {
         } else {
             self.0.queued.replace(Some(screenshot));
         }
-    }
-
-    /// Zooms in, or out, by a step, around the middle of the board.
-    fn zoom(&self, zoom_in: bool) {
-        self.run(&format!("board.zoom({})", if zoom_in { 1 } else { -1 }));
-    }
-
-    /// Back to the screenshot as big as the page, where it was.
-    fn reset_zoom(&self) {
-        self.run("board.resetZoom()");
     }
 
     /// Puts the keyboard on the whiteboard.
@@ -384,8 +365,7 @@ impl Whiteboard {
         if let Some(tool) = tool.filter(|&tool| self.0.tool.replace(tool) != tool) {
             self.tool_changed(tool);
         }
-        let zoom = message.zoom.unwrap_or(self.0.state.get().zoom);
-        self.0.state.set(State { drawing: message.drawing, undo: message.undo, redo: message.redo, zoom });
+        self.0.state.set(State { drawing: message.drawing, undo: message.undo, redo: message.redo });
         self.changed();
     }
 
@@ -464,7 +444,7 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// The whiteboard's tools, zoom, Undo and Redo, in a bar of icons.
+/// The whiteboard's tools, Undo and Redo, in a bar of icons.
 pub fn build_tools(board: &Whiteboard) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     bar.add_css_class("whiteboard-tools");
@@ -499,28 +479,6 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
         button.add_css_class("tool-button");
         button
     };
-    let zoom_out = button("ph-minus-symbolic", "Zoom Out (Ctrl+−)");
-    let zoom_in = button("ph-plus-symbolic", "Zoom In (Ctrl++)");
-    // Wide enough for 3000%, so the buttons stay put.
-    let level = gtk::Label::builder().label("100%").width_chars(5).build();
-    level.add_css_class("numeric");
-    level.add_css_class("zoom-level");
-    let reset = gtk::Button::builder().child(&level).tooltip_text("Back to the Page's Size (Ctrl+0)").build();
-    reset.add_css_class("flat");
-    reset.add_css_class("tool-button");
-    for (button, zoom_in) in [(&zoom_out, Some(false)), (&reset, None), (&zoom_in, Some(true))] {
-        let weak = board.weak();
-        button.connect_clicked(move |_| {
-            let Some(board) = weak.upgrade().map(Whiteboard) else { return };
-            match zoom_in {
-                Some(zoom_in) => board.zoom(zoom_in),
-                None => board.reset_zoom(),
-            }
-        });
-        bar.append(button);
-    }
-    bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-
     let undo = button("ph-arrow-u-up-left-symbolic", "Undo (Ctrl+Z)");
     let redo = button("ph-arrow-u-up-right-symbolic", "Redo (Ctrl+Shift+Z)");
     for (button, redo_it) in [(&undo, false), (&redo, true)] {
@@ -538,7 +496,6 @@ pub fn build_tools(board: &Whiteboard) -> gtk::Box {
             let board = Whiteboard(inner);
             buttons.0.set_sensitive(board.can_undo());
             buttons.1.set_sensitive(board.can_redo());
-            level.set_label(&format!("{:.0}%", board.0.state.get().zoom * 100.0));
         }
     };
     update();

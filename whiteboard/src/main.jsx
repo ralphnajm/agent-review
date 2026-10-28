@@ -3,7 +3,7 @@
 // The app drives it through `window.board` and hears back through the
 // `whiteboard` script message handler, as JSON: `{ "ready": true }` once it
 // can take a screenshot, `{ "shown": true }` once it shows one, then
-// `{ tool, drawing, undo, redo, zoom }` whenever one of them changes, and
+// `{ tool, drawing, undo, redo }` whenever one of them changes, and
 // `{ "action": "done" }` or `{ "action": "discard" }` for Ctrl+Enter and Esc. Excalidraw's own toolbar and menus are hidden: the app's bar
 // has the tools, and the panel of the selected element stays.
 
@@ -37,8 +37,6 @@ const STICKY_SIDE = 180;
 
 /** What's drawn takes red, until the user picks another colour for it. */
 const COLOR = "#e01b24";
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 30;
 
 let api = null;
 /**
@@ -70,7 +68,6 @@ const report = (elements, appState) => {
     drawing: elements.some((e) => !e.isDeleted && e.id !== screenshot?.element),
     undo: !disabled("undo"),
     redo: !disabled("redo"),
-    zoom: appState.zoom.value,
   };
   if (Object.keys(state).some((key) => state[key] !== posted[key])) {
     posted = state;
@@ -79,6 +76,11 @@ const report = (elements, appState) => {
 };
 
 const onChange = (elements, appState) => {
+  // The screenshot stays exactly where the page was, at its size: any zoom or
+  // scroll would resample it, and blur it.
+  if (appState.zoom.value !== 1 || appState.scrollX !== 0 || appState.scrollY !== 0) {
+    api?.updateScene({ appState: { zoom: { value: 1 }, scrollX: 0, scrollY: 0 }, captureUpdate: CaptureUpdateAction.NEVER });
+  }
   // The panel of the selected element only shows while something is selected, or text is typed.
   const selecting = Object.keys(appState.selectedElementIds).length > 0 || appState.editingTextElement;
   document.body.classList.toggle("selecting", Boolean(selecting));
@@ -253,33 +255,6 @@ window.board = {
     api?.setActiveTool(TOOLS[tool]);
   },
 
-  /** Zooms in, or out for a negative `direction`, by a step around the middle of the board. */
-  zoom(direction) {
-    const appState = api?.getAppState();
-    if (!appState) {
-      return;
-    }
-    const current = appState.zoom.value;
-    // Steps of 10% up to 100%, and of 25% above.
-    const step = current < 1 || (current === 1 && direction < 0) ? 0.1 : 0.25;
-    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round((current + direction * step) / step) * step));
-    // What's in the middle stays there: a point shows at (x + scroll) * zoom.
-    const [x, y] = [appState.width / 2, appState.height / 2];
-    api.updateScene({
-      appState: {
-        zoom: { value: next },
-        scrollX: appState.scrollX + x / next - x / current,
-        scrollY: appState.scrollY + y / next - y / current,
-      },
-      captureUpdate: CaptureUpdateAction.NEVER,
-    });
-  },
-
-  /** Shows the screenshot as big as the page, where the page was. */
-  resetZoom() {
-    api?.updateScene({ appState: { zoom: { value: 1 }, scrollX: 0, scrollY: 0 }, captureUpdate: CaptureUpdateAction.NEVER });
-  },
-
   setDark(dark) {
     show?.setDark(dark);
   },
@@ -338,8 +313,6 @@ window.addEventListener(
       action = "done";
     } else if (event.key === "y" && event.ctrlKey && !event.shiftKey) {
       window.board.redo();
-    } else if (event.key === "0" && event.ctrlKey) {
-      window.board.resetZoom();
     } else if (
       event.key === "Escape" &&
       !appState.editingTextElement &&
@@ -361,6 +334,16 @@ window.addEventListener(
     }
   },
   true,
+);
+
+// Scrolling and pinching would zoom or move the board, which stays put.
+window.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  },
+  { capture: true, passive: false },
 );
 
 createRoot(document.getElementById("root")).render(<Board />);

@@ -69,13 +69,14 @@ menubutton.commit-button > button:hover { background: alpha(currentColor, 0.1); 
 .commit-button .commit-title { font-weight: 600; }
 .commit-id { font-family: monospace; font-size: 0.85em; opacity: 0.7; }
 .commit-body { font-size: 0.9em; opacity: 0.8; }
+/* Shows or hides the commit's description, after its author and age. */
+button.description-toggle { min-height: 20px; padding: 0 6px; border-radius: 6px; font-size: 0.85em; font-weight: normal; }
 
-/* The history: rows touch, so the lines of the graph join up. */
+/* The commits. */
 .history-list { background: none; }
-.history-list > row { padding: 0 8px 0 2px; margin: 0; border-radius: 6px; }
+.history-list > row { padding: 0 8px; margin: 0; border-radius: 6px; }
 .history-subject { font-weight: 500; }
-.ref-chip { font-size: 0.75em; padding: 0 6px; }
-.ref-chip.head { background: alpha(@accent_bg_color, 0.2); color: @accent_color; }
+.reviewed-check { color: @success_color; }
 
 .mode-tabs {
   padding: 2px;
@@ -245,7 +246,4 @@ button.history-button { min-height: 28px; padding: 0 6px; border-radius: 6px; fo
 /* Its tools, in place of the browser's bar. */
 .whiteboard-tools button.tool-button { min-height: 28px; min-width: 28px; padding: 0 5px; border-radius: 6px; }
 .whiteboard-tools button.tool-button:checked { background: alpha(@accent_bg_color, 0.18); color: @accent_color; }
-/* The zoom between − and +, as plain as the icons around it. */
-.whiteboard-tools .zoom-level { font-weight: normal; }
 
-.chip.done-chip { background: alpha(@success_color, 0.16); color: @success_color; }

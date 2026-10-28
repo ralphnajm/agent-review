@@ -5,14 +5,14 @@ description: Hand work to the user for review in Agent Review, a desktop app in 
 
 # Agent Review
 
-Agent Review is a desktop app in which the user reviews *versions*: a commit,
-together with the product running from it if there is one, compared to a base
-commit. The user clicks through the product inside the app, draws on
+Agent Review is a desktop app in which the user reviews *commits*, and the
+uncommitted changes in the working directory, together with the product
+running from them if there is one. It lists the commits of the branch checked
+out, with a check on those the user reviewed. The user clicks through the product inside the app, draws on
 screenshots of it (marker, arrows, boxes, sticky notes, text) and comments on
 the code's lines and files. When they post the review, you pull it and do what
 they ask with it: address it yourself, or pass it on, for example to the pull
-request it is about. Nothing reaches you unless you pull it, and the user can
-only review what you ask them to review.
+request it is about. Nothing reaches you unless you pull it.
 
 You talk to the app through its MCP server, `agent-review --mcp`, which gives
 you three tools: `request_review`, `get_review` and `resolve_comments`. If they
@@ -21,14 +21,14 @@ are missing, see [Setup](#setup).
 ## Hand over your own work
 
 Do this once the work the user asked for is done and checked, not after every
-edit: each request puts a banner in front of the user, so it should mean
+edit: each request opens the commit in front of the user, so it should mean
 "ready for you".
 
-1. **Commit the work as a draft.** The version under review is a commit, so
-   commit your changes on the current branch, with a message that says what
-   the user is about to review: the subject is the version's title in the app,
-   and the body is shown beside it. Do not push: the commit stays a draft you
-   can still replace until the user is happy.
+1. **Commit the work as a draft.** The user reviews a commit, so commit your
+   changes on the current branch, with a message that says what the user is
+   about to review: the subject is its title in the app, and the body its
+   description. Do not push: the commit stays a draft you can still amend
+   until the user is happy.
 2. **Make sure the product runs**, if it has one (a web app, a site, a
    service with pages). Start it the way the project does (its README,
    `package.json` scripts, Makefile, …), in the background so it keeps running
@@ -38,17 +38,17 @@ edit: each request puts a banner in front of the user, so it should mean
 3. **Call `request_review`** with `url`: the address of the page the change is
    about, such as `http://localhost:5173/pricing`, so the review opens right
    where it matters. Leave `url` out when there is nothing to run, such as a
-   library or a command-line tool. By default the version covers everything
-   since the branch left its upstream, or the commit alone when there is no
-   upstream; pass `base` (a commit or revision such as `HEAD~3`) when the work
-   spans more commits than that. The reply gives the request's number: you
-   pass it as `replaces` when you hand over the next version.
-4. **Tell the user** in a sentence that the version is ready in Agent Review,
+   library or a command-line tool. The user sees the changes the commit made;
+   pass `base` (a commit or revision such as `HEAD~3`) when the work spans
+   more commits and they should see it all at once. The reply gives the
+   request's number: you pass it as `replaces` when you hand over the next
+   commit.
+4. **Tell the user** in a sentence that the commit is ready in Agent Review,
    then stop. Don't wait or poll for the review: the user will ask you to pull
    it when they have posted it.
 
 If `request_review` warns about uncommitted changes, they are not part of the
-version: commit them if they belong to it and request again.
+commit: commit them if they belong to it and request again.
 
 ## Hand over someone else's work
 
@@ -68,13 +68,12 @@ branch, a pull request. You prepare it like your own work, without committing.
 3. **Make sure the product runs** from that checkout, as for your own work
    (install dependencies if the work changed them).
 4. **Call `request_review`** with:
-   - `title`: whose work it is and what, such as `"PR #42 by John: Add
-     pricing"` or `"John's last commit: Fix the login redirect"`, since the
-     commit's own subject doesn't say;
    - `base`: what the work is compared to. For a pull request or a branch,
-     the branch it goes into, such as `origin/main`: the version is compared
-     to where their histories meet, so it shows only that work's changes. For
-     a single commit, leave it out: the commit is compared to its parent.
+     the branch it goes into, such as `origin/main`: the commit at its tip is
+     compared to where their histories meet, so it shows all of that work's
+     changes at once. For a single commit, leave it out: the commit is
+     compared to its parent. The app shows each commit's author, so the user
+     sees whose work it is.
    - `url`, as for your own work.
 5. **Tell the user** it is ready to review, and stop.
 
@@ -86,11 +85,12 @@ go back to the branch the user was on, and restore what you stashed.
 When the user asks you to pull, fetch or check their review:
 
 1. **Call `get_review`.** It returns the open comments as Markdown, grouped by
-   the version they are about (its commit and title), each with an id, and
+   the commit they are about (its id and subject), or the uncommitted
+   changes, each with an id, and
    then the screenshots as images:
    - Comments on **code** name a file and the lines they are about, quoted as
      they were when the comment was written. "Line 12" is line 12 of the file
-     as the version left it; "Removed line 12" is line 12 of the file before.
+     as the commit left it; "Removed line 12" is line 12 of the file before.
      Line numbers may have moved since: find the lines by their content.
    - Comments on **the running product**, under "The running product", name
      the page they were written on and the screenshot the user drew on, whose
@@ -99,20 +99,21 @@ When the user asks you to pull, fetch or check their review:
      notes and text on it are repeated in the comment. Find the code behind a
      page from its route, its visible text and the components it renders.
 2. **Do what the user asks with the review.** When they don't say, and the
-   version is your own work, address it:
+   commit is your own work, address it:
    - Make the change each comment asks for, answer it if it is a question, and
      if you disagree or something is unclear, say so instead of guessing. Fix
      the root cause rather than the one spot a comment points at when the same
      problem appears elsewhere.
-   - Then hand over the next version: amend the draft commit (`git commit
-     --amend`), or add commits on top of it if the user prefers to keep the
+   - Then hand over the next commit: amend the draft commit (`git commit
+     --amend`), or add a commit on top of it if the user prefers to keep the
      history; make sure the product runs the new code; and call
      `request_review` again with `replaces`: the number of the review request
-     you addressed, which `get_review` gives with each version ("review
-     request 3"). The new version takes the old one's place: if the user has
-     it open, Agent Review switches to it by itself. Their comments and
-     reviewed files carry over, and files that changed open again for another
-     look.
+     you addressed, which `get_review` gives with each commit ("review
+     request 3"). The new commit opens in Agent Review, with the user's
+     comments and reviewed files carried over, and files that changed open
+     again for another look.
+   - Comments on the uncommitted changes are about the working directory as
+     it was: address them in the files, and commit when the user asks.
 
    For someone else's work, the user usually wants the review passed on. Do
    that with the tools you have, for example:

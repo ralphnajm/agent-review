@@ -21,7 +21,7 @@
             <child><object class="GtkShortcutsShortcut"><property name="title">Find in files</property><property name="accelerator">&lt;Control&gt;f</property></object></child>
             <child><object class="GtkShortcutsShortcut"><property name="title">Next and previous match</property><property name="accelerator">Return &lt;Shift&gt;Return</property></object></child>
             <child><object class="GtkShortcutsShortcut"><property name="title">Filter files</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;f</property></object></child>
-            <child><object class="GtkShortcutsShortcut"><property name="title">Versions to review</property><property name="accelerator">&lt;Control&gt;h</property></object></child>
+            <child><object class="GtkShortcutsShortcut"><property name="title">Commits</property><property name="accelerator">&lt;Control&gt;h</property></object></child>
           </object>
         </child>
         <child>

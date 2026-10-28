@@ -3,17 +3,16 @@
 //! Layout: one top bar holding the project switcher on the left and the
 //! review state and actions on the right; a resizable file panel; and the
 //! review panel, with every file's diff and comments inline, filling the rest.
-//! For a version with a running product, a switch in the middle of the top bar
+//! For a commit with a running product, a switch in the middle of the top bar
 //! brings the product view to the front instead.
 //!
-//! What gets reviewed is a version the agent asked to have reviewed: the
-//! changes up to one of its commits. The current one opens by itself, a banner
-//! above the review panel announces newer ones, and the button at the top of
-//! the file panel lists them all.
+//! What gets reviewed is a commit, or the uncommitted changes in the working
+//! directory: the button at the top of the file panel lists them. A commit the
+//! agent asks to have reviewed opens by itself, with its running product.
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
@@ -24,13 +23,14 @@ use crate::config;
 use crate::core::changes::ChangedFile;
 use crate::core::diff::FileDiff;
 use crate::core::feedback::{self, Feedback, FileInfo, Options};
-use crate::core::git::{Commit, Repo, Snapshot};
+use crate::core::git::{Commit, Repo, Snapshot, Target};
 use crate::core::queue::{self, PostedComment, Queue, ReviewRequest};
 use crate::core::review::{ApprovalState, Author, LineAnchor, ReviewState, ReviewedCommit};
 use crate::core::skill;
 use crate::core::store::{self, Settings};
 use crate::core::update::{self, Channel};
 use crate::core::{self as app_core, watcher};
+use crate::ui::commit_picker::CommitPicker;
 use crate::ui::file_list::{FileItem, FileList};
 use crate::ui::product_view::ProductView;
 use crate::ui::project_switcher::ProjectSwitcher;
@@ -38,7 +38,6 @@ use crate::ui::review_panel::{FileData, ReviewPanel};
 use crate::ui::reviews_dialog::ReviewsDialog;
 use crate::ui::skill_dialog::SkillDialog;
 use crate::ui::util;
-use crate::ui::version_picker::VersionPicker;
 
 /// Approvals of files without a diff (e.g. type changes git can't show).
 const NO_FINGERPRINT: &str = "-";
@@ -49,21 +48,21 @@ struct Widgets {
     paned: gtk::Paned,
     sidebar: gtk::Box,
     switcher: ProjectSwitcher,
-    versions: VersionPicker,
-    /// Who wrote the version under review and when, and its message.
+    commits: CommitPicker,
+    /// Who wrote the commit under review and when, and the rest of its message.
     commit_info: gtk::Box,
     commit_meta: gtk::Label,
-    commit_body: gtk::Label,
-    /// Opens the running product of a version under review.
+    /// Shows or hides the description.
+    description_toggle: gtk::ToggleButton,
+    description: gtk::Label,
+    /// Opens the running product of the commit under review.
     product_link: gtk::LinkButton,
     search: gtk::SearchEntry,
     files: FileList,
     sidebar_stack: gtk::Stack,
     content_stack: gtk::Stack,
-    /// Announces a version ready for review, or that the one under review is out of date.
-    banner: adw::Banner,
     review: ReviewPanel,
-    /// Switches between the product and the code of a version.
+    /// Switches between the product and the code of a commit.
     view_switch: gtk::Box,
     product: ProductView,
     review_actions: gtk::Box,
@@ -72,26 +71,32 @@ struct Widgets {
     reviews_dialog: ReviewsDialog,
     skill_dialog: SkillDialog,
     error_page: adw::StatusPage,
-    /// Shown while no version is open.
-    no_version_page: adw::StatusPage,
+    /// Shown when what is under review changes no files.
+    clean_page: adw::StatusPage,
 }
 
 struct Project {
     repo: Repo,
     /// Who the comments are written by, from git; unknown if it isn't set.
     author: Option<Author>,
-    /// The version under review; `None` until one is open.
-    version: Option<Version>,
-    /// The versions the agent asked to have reviewed, oldest first.
+    /// What is under review; `None` until it is decided.
+    target: Option<Target>,
+    /// For a commit, what its changes are compared to.
+    base: String,
+    /// The latest commits of `HEAD`, newest first.
+    history: Vec<Commit>,
+    /// The commits the agent asked to have reviewed, oldest first.
     requests: Vec<ReviewRequest>,
+    /// The commits whose every file was marked reviewed.
+    checked: BTreeSet<String>,
     /// The commit `HEAD` points at, and the branch checked out, as last read.
     head: Option<String>,
     branch: Option<String>,
     snapshot: Snapshot,
-    /// Fingerprints of the version's diffs by path, for approvals.
+    /// Fingerprints of the diffs by path, for approvals.
     fingerprints: HashMap<String, String>,
     loaded: bool,
-    /// The review of the version.
+    /// The review of what is under review.
     review: ReviewState,
     /// Reviews posted for the agent to pull, and its progress on them.
     queue: Queue,
@@ -100,46 +105,65 @@ struct Project {
     _queue_watch: Option<watcher::WatchHandle>,
 }
 
-/// A version under review, and the commit it is.
-#[derive(Debug, Clone)]
-struct Version {
-    request: ReviewRequest,
-    commit: Commit,
-}
-
-/// Which review state: a project's, of the versions compared to a base.
+/// Which review state: a project's, of a commit or of the uncommitted changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReviewKey {
     path: PathBuf,
-    base: String,
+    key: String,
 }
 
 impl Project {
+    fn commit(&self) -> Option<&Commit> {
+        match &self.target {
+            Some(Target::Commit(commit)) => Some(commit),
+            _ => None,
+        }
+    }
+
+    /// The agent's latest request to review the commit under review.
     fn request(&self) -> Option<&ReviewRequest> {
-        self.version.as_ref().map(|v| &v.request)
+        queue::request_for(&self.requests, &self.commit()?.id)
+    }
+
+    /// Where the product of the commit under review runs.
+    fn url(&self) -> Option<&str> {
+        self.request()?.url.as_deref()
     }
 
     fn review_key(&self) -> Option<ReviewKey> {
-        self.request().map(|r| ReviewKey { path: self.repo.path(), base: r.base.clone() })
+        let key = match self.target.as_ref()? {
+            Target::Worktree => store::WORKTREE_KEY.to_owned(),
+            Target::Commit(commit) => commit.id.clone(),
+        };
+        Some(ReviewKey { path: self.repo.path(), key })
     }
 
     fn reviewed_commit(&self) -> Option<ReviewedCommit> {
-        self.version.as_ref().map(|v| ReviewedCommit {
-            id: v.commit.id.clone(),
-            subject: v.request.subject.clone(),
-            base: Some(v.request.base.clone()),
-            request: Some(v.request.id),
+        let commit = self.commit()?;
+        let request = self.request();
+        Some(ReviewedCommit {
+            id: commit.id.clone(),
+            subject: commit.subject.clone(),
+            base: request.and_then(|r| r.base.clone()),
+            request: request.map(|r| r.id),
         })
     }
 
-    /// The latest version requested, when it is still what `HEAD` points at.
-    fn ready_request(&self) -> Option<&ReviewRequest> {
-        self.requests.last().filter(|r| self.head.as_deref() == Some(r.commit.as_str()))
+    /// The commits the user reviewed: every file checked, or a review posted.
+    fn reviewed_commits(&self) -> HashSet<String> {
+        let posted = self.posted.iter().filter_map(|e| Some(e.review.commit.as_ref()?.id.clone()));
+        self.checked.iter().cloned().chain(posted).collect()
     }
 
-    /// The versions the user posted a review of.
-    fn reviewed_requests(&self) -> HashSet<u64> {
-        self.posted.iter().filter_map(|e| e.review.commit.as_ref()?.request).collect()
+    /// Records whether every file of the commit under review is checked.
+    fn update_checked(&mut self) {
+        let Some(id) = self.commit().map(|c| c.id.clone()).filter(|_| self.loaded) else { return };
+        let paths = &self.snapshot.files;
+        let all = !paths.is_empty() && paths.iter().all(|f| self.approval(&f.path) == ApprovalState::Approved);
+        let changed = if all { self.checked.insert(id) } else { self.checked.remove(&id) };
+        if changed && let Err(err) = store::save_checked(&self.repo.path(), &self.checked) {
+            eprintln!("agent-review: could not save the reviewed commits: {err}");
+        }
     }
 
     fn fingerprint(&self, path: &str) -> &str {
@@ -152,7 +176,7 @@ impl Project {
 
     fn save_review(&self) {
         let Some(key) = self.review_key() else { return };
-        if let Err(err) = store::save_review(&key.path, &key.base, &self.review) {
+        if let Err(err) = store::save_review(&key.path, &key.key, &self.review) {
             eprintln!("agent-review: could not save review: {err}");
         }
     }
@@ -167,7 +191,7 @@ struct State {
     selected: Option<String>,
     /// Whether the running product is in front of the code.
     product: bool,
-    /// Bumped whenever the project or the version reviewed changes, to drop stale async results.
+    /// Bumped whenever the project or what is reviewed changes, to drop stale async results.
     generation: u64,
 }
 
@@ -259,7 +283,7 @@ impl Window {
             sidebar.set_visible(!sidebar.is_visible());
         });
         self.add_action("clear-review", Self::confirm_clear_review);
-        self.add_action("show-versions", |w| w.0.w.versions.popup());
+        self.add_action("show-commits", |w| w.0.w.commits.popup());
         self.add_action("check-updates", Self::check_for_updates);
         self.add_action("install-skill", |w| w.0.w.skill_dialog.present(&w.0.w.window));
 
@@ -291,7 +315,7 @@ impl Window {
         let accels: &[(&str, &[&str])] = &[
             ("win.open-folder", &["<Control>o"]),
             ("win.switch-project", &["<Control>p"]),
-            ("win.show-versions", &["<Control>h"]),
+            ("win.show-commits", &["<Control>h"]),
             ("win.refresh", &["<Control>r", "F5"]),
             ("win.next-file", &["<Alt>Down", "<Control>Page_Down"]),
             ("win.prev-file", &["<Alt>Up", "<Control>Page_Up"]),
@@ -324,7 +348,7 @@ impl Window {
             "show-reviews",
             "clear-review",
             "focus-search",
-            "show-versions",
+            "show-commits",
         ] {
             self.set_action_enabled(name, has_project);
         }
@@ -335,7 +359,7 @@ impl Window {
             self.set_action_enabled(name, has_file || product);
         }
         self.0.w.review_actions.set_visible(has_project);
-        self.0.w.versions.widget().set_sensitive(has_project);
+        self.0.w.commits.widget().set_sensitive(has_project);
     }
 
     // ----- Signals -------------------------------------------------------
@@ -351,17 +375,15 @@ impl Window {
         });
 
         let weak = self.weak();
-        w.versions.connect_pick(move |request| {
+        w.commits.connect_pick(move |target| {
             if let Some(inner) = weak.upgrade() {
-                Self(inner).open_request(request);
+                Self(inner).open_target(target);
             }
         });
         let weak = self.weak();
-        w.banner.connect_button_clicked(move |_| {
-            let Some(inner) = weak.upgrade() else { return };
-            let ready = inner.state.borrow().project.as_ref().and_then(Project::ready_request).cloned();
-            if let Some(request) = ready {
-                Self(inner).open_request(request);
+        w.commits.connect_more(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                Self(inner).check_head();
             }
         });
 
@@ -453,11 +475,15 @@ impl Window {
             let Some(inner) = weak.upgrade() else { return reply(None) };
             let state = inner.state.borrow();
             let Some(project) = state.project.as_ref() else { return reply(None) };
-            let Some(version) = project.version.as_ref() else { return reply(None) };
-            let (repo, commit, path) = (project.repo.clone(), version.commit.id.clone(), path.to_owned());
+            let Some(target) = project.target.clone() else { return reply(None) };
+            let (repo, path) = (project.repo.clone(), path.to_owned());
             drop(state);
             glib::spawn_future_local(async move {
-                let text = gio::spawn_blocking(move || repo.commit_text(&commit, &path)).await;
+                let text = gio::spawn_blocking(move || match target {
+                    Target::Worktree => repo.worktree_text(&path),
+                    Target::Commit(commit) => repo.commit_text(&commit.id, &path),
+                })
+                .await;
                 reply(text.ok().and_then(Result::ok).flatten());
             });
         });
@@ -533,8 +559,11 @@ impl Window {
             state.settings.touch_project(&path, app_core::now());
             state.project = Some(Project {
                 author: author.clone(),
-                version: None,
+                target: None,
+                base: String::new(),
+                history: Vec::new(),
                 requests: queue.requests(),
+                checked: store::load_checked(&path),
                 head: None,
                 branch: None,
                 review: ReviewState::default(),
@@ -550,6 +579,7 @@ impl Window {
         }
         self.save_settings();
         self.0.w.search.set_text("");
+        self.0.w.commits.reset();
         self.0.w.review.clear();
         self.0.w.review.set_author(author.as_ref());
         self.render();
@@ -602,36 +632,27 @@ impl Window {
     }
 
     fn reload_posted(&self) {
-        let (new_request, replacement) = {
+        let new_request = {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = state.project.as_mut() else { return };
             project.posted = project.queue.load();
             let known = project.requests.last().map_or(0, |r| r.id);
             project.requests = project.queue.requests();
-            let new_request = project.requests.last().filter(|r| r.id > known).cloned();
-            // A new version taking the place of the one under review.
-            let replacement = project
-                .request()
-                .and_then(|open| queue::replacement(&project.requests, open.id))
-                .filter(|r| r.id > known)
-                .cloned();
-            (new_request, replacement)
+            project.requests.last().filter(|r| r.id > known).cloned()
         };
         if let Some(request) = new_request {
             self.notify_request(&request);
-            // Whether it is ready depends on where `HEAD` is now.
+            // The commit is likely new to the list.
             self.check_head();
-        }
-        if let Some(request) = replacement {
-            // It is reviewed in place of the old one, with the drawing in progress on the review.
+            // It opens, with the drawing in progress on the review of what was open.
             let weak = self.weak();
             self.0.w.product.commit_drawing(move || {
                 if let Some(inner) = weak.upgrade() {
-                    Self(inner).open_request(request);
+                    Self(inner).open_commit(request.commit.clone());
                 }
             });
         }
-        self.render_banner();
+        self.render_source();
         self.render_toolbar();
         if self.0.w.reviews_dialog.is_open() {
             self.update_reviews_dialog();
@@ -640,20 +661,28 @@ impl Window {
 
     // ----- Refreshing ----------------------------------------------------
 
-    /// Reads where the repository is, and the version under review's changes
-    /// unless they are loaded already: a version never changes once read.
+    /// Reads where the repository is and its commits, and the changes under
+    /// review: always for the working directory, once for a commit, which
+    /// never changes once read.
     pub fn refresh(&self) {
         self.check_head();
-        let (repo, version, generation) = {
+        let (repo, target, base, generation) = {
             let state = self.0.state.borrow();
-            let Some(project) = state.project.as_ref().filter(|p| !p.loaded) else { return };
-            let Some(version) = project.version.as_ref() else { return };
-            (project.repo.clone(), version.clone(), state.generation)
+            let Some(project) = state.project.as_ref() else { return };
+            let Some(target) = project.target.clone() else { return };
+            if project.loaded && target != Target::Worktree {
+                return;
+            }
+            (project.repo.clone(), target, project.base.clone(), state.generation)
         };
         let weak = self.weak();
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || {
-                repo.range_snapshot(&version.request.base, &version.commit.id).map(|snapshot| {
+                let snapshot = match &target {
+                    Target::Worktree => repo.worktree_snapshot(),
+                    Target::Commit(commit) => repo.range_snapshot(&base, &commit.id),
+                };
+                snapshot.map(|snapshot| {
                     let fingerprints =
                         snapshot.diffs.iter().map(|(path, diff)| (path.clone(), diff.fingerprint())).collect();
                     (snapshot, fingerprints)
@@ -663,7 +692,7 @@ impl Window {
             let Some(inner) = weak.upgrade() else { return };
             let this = Self(inner);
             if this.0.state.borrow().generation != generation {
-                // Another project or version meanwhile.
+                // Another project or commit meanwhile.
                 return;
             }
             match result {
@@ -672,38 +701,50 @@ impl Window {
                         project.snapshot = snapshot;
                         project.fingerprints = fingerprints;
                         project.loaded = true;
+                        project.update_checked();
                     }
                     this.render();
                 }
-                Ok(Err(err)) => this.toast(&format!("Could not read the version: {err:#}")),
-                Err(_) => this.toast("Reading the version failed unexpectedly"),
+                Ok(Err(err)) => this.toast(&format!("Could not read the changes: {err:#}")),
+                Err(_) => this.toast("Reading the changes failed unexpectedly"),
             }
         });
     }
 
-    /// Reads where `HEAD` is, which decides whether a requested version is
-    /// still current, and opens the current version if none is open yet.
+    /// Reads where `HEAD` is and the latest commits, and opens what to
+    /// review if nothing is open yet: the commit at `HEAD`, or the working
+    /// directory before the first commit.
     fn check_head(&self) {
         let Some(repo) = self.0.state.borrow().project.as_ref().map(|p| p.repo.clone()) else { return };
+        let limit = self.0.w.commits.limit();
         let weak = self.weak();
         glib::spawn_future_local(async move {
             let reader = repo.clone();
-            let (head, branch) =
-                gio::spawn_blocking(move || (reader.head(), reader.branch())).await.unwrap_or_default();
+            let (head, branch, history) = gio::spawn_blocking(move || {
+                (reader.head(), reader.branch(), reader.history(limit).unwrap_or_default())
+            })
+            .await
+            .unwrap_or_default();
             let Some(inner) = weak.upgrade() else { return };
             let this = Self(inner);
             let open = {
                 let mut state = this.0.state.borrow_mut();
                 let Some(project) = state.project.as_mut().filter(|p| p.repo == repo) else { return };
-                if project.head == head && project.branch == branch && project.version.is_some() {
+                if project.head == head
+                    && project.branch == branch
+                    && project.history == history
+                    && project.target.is_some()
+                {
                     return;
                 }
                 project.head = head;
                 project.branch = branch;
-                project.version.is_none().then(|| project.ready_request().cloned()).flatten()
+                project.history = history;
+                project.target.is_none().then(|| project.history.first().cloned())
             };
             match open {
-                Some(request) => this.open_request(request),
+                Some(Some(commit)) => this.open_target(Target::Commit(commit)),
+                Some(None) => this.open_target(Target::Worktree),
                 None => this.render(),
             }
         });
@@ -713,7 +754,6 @@ impl Window {
 
     fn render(&self) {
         self.render_switcher();
-        self.render_banner();
         self.render_source();
         self.render_list();
         self.render_content();
@@ -738,52 +778,19 @@ impl Window {
         self.0.w.switcher.set_recent(&state.settings.recent, current.as_deref());
     }
 
-    /// Above the review panel: a version ready for review, or that the one
-    /// under review is out of date.
-    fn render_banner(&self) {
-        let banner = &self.0.w.banner;
-        let state = self.0.state.borrow();
-        let Some(project) = state.project.as_ref() else {
-            banner.set_revealed(false);
-            return;
-        };
-        let reviewing = project.request();
-        // Asking again for the version under review is no news.
-        if let Some(ready) = project.ready_request().filter(|r| reviewing.is_none_or(|v| v.commit != r.commit)) {
-            banner.set_title(&format!(
-                "Version {} is ready for review: {}",
-                ready.short_id(),
-                glib::markup_escape_text(&ready.subject)
-            ));
-            banner.set_button_label(Some("Review"));
-            banner.set_revealed(true);
-        } else if let Some(version) = reviewing.filter(|v| project.head.as_deref() != Some(v.commit.as_str())) {
-            banner
-                .set_title(&format!("Version {} is out of date: the repository has moved past it", version.short_id()));
-            banner.set_button_label(None);
-            banner.set_revealed(true);
-        } else {
-            banner.set_revealed(false);
-        }
-    }
-
-    /// What is being reviewed, at the top of the file panel.
+    /// What is under review, at the top of the file panel.
     fn render_source(&self) {
         let w = &self.0.w;
         let state = self.0.state.borrow();
         let project = state.project.as_ref();
-        let version = project.and_then(|p| p.version.as_ref());
+        let now = app_core::now();
         match project {
-            Some(project) => w.versions.set_versions(
-                &queue::current_requests(&project.requests),
-                project.request(),
-                project.head.as_deref(),
-                &project.reviewed_requests(),
-                app_core::now(),
-            ),
-            None => w.versions.set_versions(&[], None, None, &HashSet::new(), app_core::now()),
+            Some(project) => {
+                w.commits.set_commits(&project.history, project.target.as_ref(), &project.reviewed_commits(), now);
+            }
+            None => w.commits.set_commits(&[], None, &HashSet::new(), now),
         }
-        let url = version.and_then(|v| v.request.url.as_deref());
+        let url = project.and_then(Project::url);
         w.product_link.set_visible(url.is_some());
         if let Some(url) = url {
             w.product_link.set_uri(url);
@@ -792,13 +799,13 @@ impl Window {
                 label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             }
         }
-        w.commit_info.set_visible(version.is_some());
-        if let Some(Version { commit, .. }) = version {
-            let age = util::relative_time(commit.time, app_core::now());
+        let commit = project.and_then(Project::commit);
+        w.commit_info.set_visible(commit.is_some());
+        if let Some(commit) = commit {
+            let age = util::relative_time(commit.time, now);
             w.commit_meta.set_text(&format!("{} · {age}", commit.author));
-            w.commit_body.set_text(&commit.body);
-            w.commit_body.set_tooltip_text(Some(&commit.body));
-            w.commit_body.set_visible(!commit.body.is_empty());
+            w.description.set_text(&commit.body);
+            w.description_toggle.set_visible(!commit.body.is_empty());
         }
     }
 
@@ -874,18 +881,7 @@ impl Window {
             }
             return;
         };
-        let url = project.request().and_then(|r| r.url.as_ref());
-        w.view_switch.set_visible(url.is_some());
-        if project.version.is_none() {
-            w.no_version_page.set_description(Some(if project.requests.is_empty() {
-                "When your agent finishes a set of changes, it commits them and asks you to review them, and they \
-                 open here. Install the agent skill from the main menu to teach your agent how."
-            } else {
-                "The versions your agent asked you to review are listed at the top of the file panel."
-            }));
-            w.content_stack.set_visible_child_name("no-version");
-            return;
-        }
+        w.view_switch.set_visible(project.url().is_some());
         if state.product {
             w.content_stack.set_visible_child_name("product");
             return;
@@ -895,6 +891,10 @@ impl Window {
             return;
         }
         if project.snapshot.files.is_empty() {
+            w.clean_page.set_description(Some(match project.target {
+                Some(Target::Commit(_)) => "This commit changes no files.",
+                _ => "There are no uncommitted changes in the working directory.",
+            }));
             w.content_stack.set_visible_child_name("clean");
             return;
         }
@@ -934,12 +934,12 @@ impl Window {
 
     // ----- Navigation ----------------------------------------------------
 
-    /// Brings the running product of the version under review to the front,
+    /// Brings the running product of the commit under review to the front,
     /// or the code.
     fn show_product(&self, product: bool) {
         {
             let mut state = self.0.state.borrow_mut();
-            let has_product = state.project.as_ref().and_then(Project::request).is_some_and(|r| r.url.is_some());
+            let has_product = state.project.as_ref().and_then(Project::url).is_some();
             state.product = product && has_product;
         }
         self.sync_view_action();
@@ -982,14 +982,13 @@ impl Window {
         }
     }
 
-    // ----- Versions ------------------------------------------------------
+    // ----- Commits -------------------------------------------------------
 
-    /// Reviews the version `request`, once its commit is read.
-    fn open_request(&self, request: ReviewRequest) {
+    /// Reviews commit `id`, once it is read.
+    fn open_commit(&self, id: String) {
         let Some(repo) = self.0.state.borrow().project.as_ref().map(|p| p.repo.clone()) else { return };
         let weak = self.weak();
         glib::spawn_future_local(async move {
-            let id = request.commit.clone();
             let reader = repo.clone();
             let result = gio::spawn_blocking(move || reader.commit(&id)).await;
             let Some(inner) = weak.upgrade() else { return };
@@ -998,31 +997,62 @@ impl Window {
                 return;
             }
             match result {
-                Ok(Ok(commit)) => this.review_version(Version { request, commit }),
-                Ok(Err(err)) => this.toast(&format!("Could not open the version: {err:#}")),
-                Err(_) => this.toast("Opening the version failed unexpectedly"),
+                Ok(Ok(commit)) => this.open_target(Target::Commit(commit)),
+                Ok(Err(err)) => this.toast(&format!("Could not open the commit: {err:#}")),
+                Err(_) => this.toast("Opening the commit failed unexpectedly"),
             }
         });
     }
 
-    fn review_version(&self, version: Version) {
-        let url = version.request.url.clone();
-        {
+    /// Reviews `target`, once a commit's base is known: what the agent asked
+    /// to compare it to, or its parent.
+    fn open_target(&self, target: Target) {
+        let Target::Commit(commit) = &target else {
+            self.review_target(target, String::new());
+            return;
+        };
+        let (repo, base) = {
+            let state = self.0.state.borrow();
+            let Some(project) = state.project.as_ref() else { return };
+            let base = queue::request_for(&project.requests, &commit.id).and_then(|r| r.base.clone());
+            (project.repo.clone(), base)
+        };
+        let (reader, id) = (repo.clone(), commit.id.clone());
+        let weak = self.weak();
+        glib::spawn_future_local(async move {
+            let base = match base {
+                Some(base) => base,
+                None => gio::spawn_blocking(move || reader.parent_or_empty(&id)).await.unwrap_or_default(),
+            };
+            let Some(inner) = weak.upgrade() else { return };
+            let this = Self(inner);
+            if this.0.state.borrow().project.as_ref().is_some_and(|p| p.repo == repo) {
+                this.review_target(target, base);
+            }
+        });
+    }
+
+    fn review_target(&self, target: Target, base: String) {
+        let url = {
             let mut state = self.0.state.borrow_mut();
             let Some(project) = state.project.as_mut() else { return };
-            if project.request().is_some_and(|r| r.id == version.request.id) {
+            if project.target.as_ref() == Some(&target) {
                 return;
             }
-            project.review = store::load_review(&project.repo.path(), &version.request.base);
-            project.version = Some(version);
+            project.target = Some(target);
+            project.base = base;
+            let review = load_review(project);
+            project.review = review;
             project.snapshot = Snapshot::default();
             project.fingerprints.clear();
             project.loaded = false;
+            let url = project.url().map(str::to_owned);
             state.generation += 1;
             state.selected = None;
-            // A version's running product comes first.
+            // A commit's running product comes first.
             state.product = url.is_some();
-        }
+            url
+        };
         self.0.w.review.clear();
         self.sync_view_action();
         if let Some(url) = url {
@@ -1032,12 +1062,12 @@ impl Window {
         self.refresh();
     }
 
-    /// Tells the user about a version the agent asked to have reviewed, unless
+    /// Tells the user about a commit the agent asked to have reviewed, unless
     /// they are looking at the window.
     fn notify_request(&self, request: &ReviewRequest) {
         let window = &self.0.w.window;
         let Some(app) = window.application().filter(|_| !window.is_active()) else { return };
-        let notification = gio::Notification::new(&format!("Version {} is ready for review", request.short_id()));
+        let notification = gio::Notification::new(&format!("Commit {} is ready for review", request.short_id()));
         notification.set_body(Some(&request.subject));
         app.send_notification(Some("review-request"), &notification);
     }
@@ -1054,9 +1084,11 @@ impl Window {
             let fingerprint = approve.then(|| project.fingerprint(path).to_owned());
             project.review.set_approved(path, fingerprint.as_deref(), app_core::now());
             project.save_review();
+            project.update_checked();
             approve
         };
         self.render_review_change(path);
+        self.render_source();
         if approved_now {
             self.0.w.review.collapse(path);
             match self.0.w.files.next_unreviewed(Some(path)) {
@@ -1090,8 +1122,10 @@ impl Window {
                 project.review.set_approved(path, Some(&fingerprint), now);
             }
             project.save_review();
+            project.update_checked();
         }
         self.render_review_change(path);
+        self.render_source();
     }
 
     fn add_product_note(&self, page: &str, body: &str, screenshot: Option<&std::path::Path>) {
@@ -1142,18 +1176,19 @@ impl Window {
                 return;
             }
         }
-        let mut review = store::load_review(&key.path, &key.base);
+        let mut review = store::load_review(&key.path, &key.key);
         edit(&mut review);
-        if let Err(err) = store::save_review(&key.path, &key.base, &review) {
+        if let Err(err) = store::save_review(&key.path, &key.key, &review) {
             eprintln!("agent-review: could not save review: {err}");
         }
     }
 
     fn confirm_clear_review(&self) {
-        if self.0.state.borrow().project.as_ref().is_none_or(|p| p.version.is_none()) {
-            return;
-        }
-        let body = "All approvals and comments on this version will be deleted.";
+        let body = match self.0.state.borrow().project.as_ref().and_then(|p| p.target.as_ref()) {
+            Some(Target::Commit(_)) => "All approvals and comments on this commit will be deleted.",
+            Some(Target::Worktree) => "All approvals and comments on the uncommitted changes will be deleted.",
+            None => return,
+        };
         let dialog = adw::AlertDialog::new(Some("Clear Review?"), Some(body));
         dialog.add_responses(&[("cancel", "_Cancel"), ("clear", "_Clear Review")]);
         dialog.set_response_appearance("clear", adw::ResponseAppearance::Destructive);
@@ -1169,6 +1204,7 @@ impl Window {
             if let Some(project) = this.0.state.borrow_mut().project.as_mut() {
                 project.review.clear();
                 project.save_review();
+                project.update_checked();
             }
             this.render();
         });
@@ -1181,7 +1217,7 @@ impl Window {
     fn feedback(&self) -> Option<Feedback> {
         let state = self.0.state.borrow();
         let project = state.project.as_ref()?;
-        project.version.as_ref()?;
+        project.target.as_ref()?;
         let files: Vec<FileInfo<'_>> = project
             .snapshot
             .files
@@ -1502,6 +1538,20 @@ fn show_update_check(
     }
 }
 
+/// The review of what is under review in `project`. A commit the agent asked
+/// to review in place of others starts from the review of the latest of them.
+fn load_review(project: &Project) -> ReviewState {
+    let Some(key) = project.review_key() else { return ReviewState::default() };
+    store::find_review(&key.path, &key.key)
+        .or_else(|| {
+            let request = project.request()?;
+            queue::replaced_commits(&project.requests, request)
+                .into_iter()
+                .find_map(|commit| store::find_review(&key.path, commit))
+        })
+        .unwrap_or_default()
+}
+
 /// The header details of a file after its line counts: kind of change and rename.
 fn file_meta(file: &ChangedFile, diff: Option<&FileDiff>) -> String {
     let mut meta = vec![file.kind.label().to_owned()];
@@ -1624,14 +1674,39 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         .margin_end(10)
         .margin_bottom(6)
         .build();
-    let versions = VersionPicker::new();
+    let commits = CommitPicker::new();
     let commit_meta = util::label("", &["dim-label", "caption"]);
     commit_meta.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let commit_body = util::label("", &["commit-body"]);
-    commit_body.set_wrap(true);
-    commit_body.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    commit_body.set_lines(6);
-    commit_body.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    commit_meta.set_hexpand(true);
+    let description_toggle = gtk::ToggleButton::builder()
+        .label("Description")
+        .tooltip_text("Show the Commit's Description")
+        .valign(gtk::Align::Center)
+        .build();
+    description_toggle.add_css_class("flat");
+    description_toggle.add_css_class("description-toggle");
+    let meta_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    meta_line.append(&commit_meta);
+    meta_line.append(&description_toggle);
+    let description = util::label("", &["commit-body"]);
+    description.set_wrap(true);
+    description.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    description.set_selectable(true);
+    let description_scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(240)
+        .child(&description)
+        .build();
+    let description_revealer = gtk::Revealer::builder().child(&description_scroller).build();
+    description_toggle.bind_property("active", &description_revealer, "reveal-child").sync_create().build();
+    description_toggle.connect_toggled(|toggle| {
+        toggle.set_tooltip_text(Some(if toggle.is_active() {
+            "Hide the Commit's Description"
+        } else {
+            "Show the Commit's Description"
+        }));
+    });
     let product_link =
         gtk::LinkButton::builder().halign(gtk::Align::Start).tooltip_text("Open the Running Product").build();
     product_link.add_css_class("product-link");
@@ -1639,10 +1714,10 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     commit_info.set_margin_start(4);
     commit_info.set_margin_end(4);
     commit_info.set_visible(false);
-    commit_info.append(&commit_meta);
-    commit_info.append(&commit_body);
+    commit_info.append(&meta_line);
+    commit_info.append(&description_revealer);
     commit_info.append(&product_link);
-    tools.append(versions.widget());
+    tools.append(commits.widget());
     tools.append(&commit_info);
     tools.append(&search);
 
@@ -1676,8 +1751,8 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         .icon_name(config::APP_ID)
         .title("Review Your Agent's Changes")
         .description(
-            "Open a Git repository to review its uncommitted changes, comment on lines, and send the feedback \
-             back to your coding agent.",
+            "Open a Git repository to review its commits and uncommitted changes, comment on lines, and send the \
+             feedback back to your coding agent.",
         )
         .child(&open_button)
         .build();
@@ -1699,22 +1774,7 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .build();
-    let clean_page = adw::StatusPage::builder()
-        .icon_name("object-select-symbolic")
-        .title("No Changes")
-        .description("This version changes no files.")
-        .build();
-    let install_skill = gtk::Button::builder()
-        .label("Install Agent Skill…")
-        .halign(gtk::Align::Center)
-        .action_name("win.install-skill")
-        .build();
-    install_skill.add_css_class("pill");
-    let no_version_page = adw::StatusPage::builder()
-        .icon_name("document-open-recent-symbolic")
-        .title("No Version to Review")
-        .child(&install_skill)
-        .build();
+    let clean_page = adw::StatusPage::builder().icon_name("object-select-symbolic").title("No Changes").build();
     let select_page = adw::StatusPage::builder()
         .icon_name("edit-find-symbolic")
         .title("No Matching Files")
@@ -1726,16 +1786,13 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     content_stack.add_named(&error_page, Some("error"));
     content_stack.add_named(&loading, Some("loading"));
     content_stack.add_named(&clean_page, Some("clean"));
-    content_stack.add_named(&no_version_page, Some("no-version"));
     content_stack.add_named(&select_page, Some("select"));
     content_stack.add_named(review.widget(), Some("diff"));
     let product = ProductView::new();
     content_stack.add_named(product.widget(), Some("product"));
 
-    let banner = adw::Banner::new("");
     let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main.add_css_class("main-area");
-    main.append(&banner);
     main.append(&content_stack);
 
     let paned = gtk::Paned::builder()
@@ -1772,16 +1829,16 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         paned,
         sidebar,
         switcher,
-        versions,
+        commits,
         commit_info,
         commit_meta,
-        commit_body,
+        description_toggle,
+        description,
         product_link,
         search,
         files,
         sidebar_stack,
         content_stack,
-        banner,
         review,
         view_switch,
         product,
@@ -1791,6 +1848,6 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         reviews_dialog: ReviewsDialog::new(),
         skill_dialog: SkillDialog::new(),
         error_page,
-        no_version_page,
+        clean_page,
     }
 }

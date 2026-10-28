@@ -42,6 +42,10 @@ impl Feedback {
 
 const MAX_QUOTE_CHARS: usize = 120;
 
+fn short(id: &str) -> &str {
+    id.get(..7).unwrap_or(id)
+}
+
 pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) -> Feedback {
     let mut feedback = Feedback::default();
     let mut sections = String::new();
@@ -97,9 +101,9 @@ pub fn build(review: &ReviewState, files: &[FileInfo<'_>], options: &Options) ->
 
     let reviewed = options.commit.as_ref().map_or_else(
         || "the current uncommitted changes".to_owned(),
-        |c| {
-            let what = if c.base.is_some() { "version" } else { "commit" };
-            format!("{what} {} ({})", c.short_id(), c.subject)
+        |c| match &c.base {
+            Some(base) => format!("commit {} ({}), with the changes since {}", c.short_id(), c.subject, short(base)),
+            None => format!("commit {} ({})", c.short_id(), c.subject),
         },
     );
     let mut text = format!("I reviewed {reviewed}. ");
@@ -294,9 +298,9 @@ These files look good, no changes needed:
             ReviewedCommit { id: "0123456789abcdef".into(), subject: "Add a.rs".into(), base: None, request: None };
         let text = build(&review, &files, &Options { commit: Some(commit.clone()), ..Options::default() }).text;
         assert!(text.starts_with("I reviewed commit 0123456 (Add a.rs). Please address the following notes."));
-        let version = ReviewedCommit { base: Some("fedcba9876543210".into()), ..commit };
-        let text = build(&review, &files, &Options { commit: Some(version), ..Options::default() }).text;
-        assert!(text.starts_with("I reviewed version 0123456 (Add a.rs)."));
+        let range = ReviewedCommit { base: Some("fedcba9876543210".into()), ..commit };
+        let text = build(&review, &files, &Options { commit: Some(range), ..Options::default() }).text;
+        assert!(text.starts_with("I reviewed commit 0123456 (Add a.rs), with the changes since fedcba9."));
     }
 
     #[test]

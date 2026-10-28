@@ -72,11 +72,11 @@ impl LineAnchor {
 pub struct ReviewedCommit {
     pub id: String,
     pub subject: String,
-    /// For a version the agent asked to have reviewed, the commit its changes
-    /// are compared to.
+    /// The commit its changes are compared to, when the agent asked to have
+    /// them reviewed since an earlier commit than its parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    /// The id of that version's review request.
+    /// The id of the agent's request to review it, if it asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<u64>,
 }

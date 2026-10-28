@@ -5,6 +5,32 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.7] - 2026-10-28
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Added
+
+- Review the uncommitted changes again: **Working Directory**, first in the list above the file panel, shows everything
+  that differs from the last commit, untracked files included, and updates as the files change.
+
+### Changed
+
+- The list above the file panel is now the commits of the branch you're on, newest first, each with its author, instead
+  of the versions your agent asked you to review. A green check marks the commits you reviewed: every file marked
+  reviewed, or a review posted. Each commit shows the changes it made; when your agent asks you to review a branch or a
+  pull request, it can show all of its changes at once instead.
+- When your agent asks you to review a commit, it opens by itself, with its running product. When it addresses your
+  review in a new commit, your comments and reviewed files carry over to it.
+- The commit's description is tucked away: **Description**, next to its author and date, shows or hides it.
+- The whiteboard always shows the screenshot at its true size, where the page was, so it stays sharp: it no longer
+  zooms or scrolls.
+
+### Removed
+
+- The banner announcing a version ready for review, and the **Out of date** mark: commits are what they are.
+- Zoom on the whiteboard, which blurred the screenshot.
+
 ## [1.0.0-alpha.6] - 2026-10-21
 
 A pre-release: Check for Updates offers it on the **Pre-releases** channel.

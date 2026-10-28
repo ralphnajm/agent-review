@@ -1,5 +1,5 @@
 //! A Model Context Protocol server, run with `agent-review --mcp`, through
-//! which a coding agent asks the user to review a version, pulls the reviews
+//! which a coding agent asks the user to review a commit, pulls the reviews
 //! the user posted and resolves their comments.
 //!
 //! The agent starts the server itself and talks to it over stdio, one
@@ -23,16 +23,16 @@ use crate::core::review::ReviewedCommit;
 /// Protocol revisions the server can speak; the newest is offered by default.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
-const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews versions: commits you \
-ask them to review, with the running product beside the code, and leaves comments on them, screenshots of the \
-product included. When you finish a set of changes for the user to review, commit them as a draft commit that is not \
-pushed, make sure the product is running if it has one, and call request_review. To let the user review someone \
-else's work (a commit, a branch, a pull request), check it out, run it, and call request_review with a title saying \
-whose it is and a base it is compared to. When the user asks you to pull, fetch or check their review, call \
-get_review, then do what they ask with it: address each comment and call resolve_comments with the ids of those you \
-addressed, or pass the review on, for example to the pull request. When you address a review of your own version, \
-amend the draft commit or add commits on top of it, and call request_review again with replaces set to the request \
-of the version you addressed, so the new version takes its place.";
+const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews the commits of their \
+repository, and the uncommitted changes, with the running product beside the code, and leaves comments on them, \
+screenshots of the product included. When you finish a set of changes for the user to review, commit them as a draft \
+commit that is not pushed, make sure the product is running if it has one, and call request_review: the commit opens \
+in Agent Review. To let the user review someone else's work (a commit, a branch, a pull request), check it out, run \
+it, and call request_review, with a base for a branch or a pull request. When the user asks you to pull, fetch or \
+check their review, call get_review, then do what they ask with it: address each comment and call resolve_comments \
+with the ids of those you addressed, or pass the review on, for example to the pull request. When you address a \
+review of your own commit, amend it or add a commit on top of it, and call request_review again with replaces set to \
+the request you addressed, so the user's comments carry over to the new commit.";
 
 /// Serves requests from stdin until it closes.
 pub fn serve() -> Result<()> {
@@ -121,10 +121,12 @@ impl Server {
             .context("There is nothing to review yet. Commit your changes, then request the review again")?;
         // A branch's tip as the base would also show what it gained since: compare
         // to where the histories meet instead.
-        let base = match arguments.get("base").and_then(Value::as_str) {
-            Some(base) => repo.merge_base(&repo.resolve(base)?, &commit)?,
-            None => repo.review_base(&commit),
+        let base = match arguments.get("base").and_then(Value::as_str).map(str::trim).filter(|b| !b.is_empty()) {
+            Some(base) => Some(repo.merge_base(&repo.resolve(base)?, &commit)?),
+            None => None,
         };
+        // Compared to its parent, the commit needs no base.
+        let base = base.filter(|base| *base != repo.parent_or_empty(&commit));
         let info = repo.commit(&commit)?;
         let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
         let url = text("url");
@@ -144,45 +146,39 @@ impl Server {
             id: 0,
             requested_at: crate::core::now(),
             commit,
-            subject: text("title").map_or(info.subject, str::to_owned),
-            body: info.body,
+            subject: info.subject,
             base,
             url: url.map(str::to_owned),
             replaces,
         };
         let request = queue.request(request).context("Could not save the review request")?;
 
-        let since = if request.base == git::EMPTY_TREE {
-            "all of its changes".to_owned()
-        } else {
-            format!("the changes since {}", request.base.get(..7).unwrap_or(&request.base))
-        };
         let mut text = format!(
-            "Asked the user to review version {} ({}) as request {}: {since}",
+            "Asked the user to review commit {} ({}) as request {}",
             request.short_id(),
             request.subject,
             request.id
         );
+        if let Some(base) = &request.base {
+            let since = if base == git::EMPTY_TREE { "the start" } else { base.get(..7).unwrap_or(base) };
+            let _ = write!(text, ", with all the changes since {since}");
+        }
         if let Some(url) = &request.url {
             let _ = write!(text, ", and the product running at {url}");
         }
         if let Some(replaced) = request.replaces {
-            let _ = write!(
-                text,
-                ". It takes the place of request {replaced}: if the user has that one open, Agent Review switches \
-                 to this one, keeping their comments"
-            );
+            let _ = write!(text, ". It takes the place of request {replaced}: the user's comments carry over to it");
         }
         let _ = write!(
             text,
-            ". They review it in Agent Review and post their comments when done. When they ask you to, call \
-             get_review. To address their comments, amend the draft commit or add commits on top of it, then call \
-             request_review again with replaces: {}.",
+            ". It opens in Agent Review, where they review it and post their comments when done. When they ask you \
+             to, call get_review. To address their comments, amend the commit or add a commit on top of it, then \
+             call request_review again with replaces: {}.",
             request.id
         );
         if repo.has_uncommitted_changes().unwrap_or(false) {
             text.push_str(
-                "\n\nThere are also uncommitted changes, which this version does not include. If they belong to it, \
+                "\n\nThere are also uncommitted changes, which this commit does not include. If they belong to it, \
                  commit them and call request_review again.",
             );
         }
@@ -259,8 +255,8 @@ fn render(root: &Path, comments: &[(Option<&ReviewedCommit>, &PostedComment)]) -
     } else {
         format!(
             "The user reviewed changes in {} and left these comments. Paths are relative to the repository \
-             root. Line numbers refer to the files when the comment was written, or for a commit or a version, to \
-             the files as that commit left them. Address each comment, then call resolve_comments with the ids of \
+             root. Line numbers refer to the files when the comment was written, or for a commit, to the files as \
+             that commit left them. Address each comment, then call resolve_comments with the ids of \
              the comments you addressed.\n\n",
             root.display()
         )
@@ -271,8 +267,10 @@ fn render(root: &Path, comments: &[(Option<&ReviewedCommit>, &PostedComment)]) -
             _ if only_uncommitted => {}
             None => text.push_str("## Uncommitted changes\n\n"),
             Some(commit) => {
-                let what = if commit.base.is_some() { "Version" } else { "Commit" };
-                let _ = write!(text, "## {what} {} ({})", commit.id, commit.subject);
+                let _ = write!(text, "## Commit {} ({})", commit.id, commit.subject);
+                if let Some(base) = &commit.base {
+                    let _ = write!(text, ", with the changes since {base}");
+                }
                 if let Some(request) = commit.request {
                     let _ = write!(text, ", review request {request}");
                 }
@@ -353,18 +351,13 @@ fn tools() -> Value {
         {
             "name": "request_review",
             "title": "Request a review",
-            "description": "Ask the user to review the version at HEAD, and the running product if there is one: \
-                work you committed (as draft commits that are not pushed), or someone else's commit, branch or pull \
-                request you checked out. Agent Review shows the user the changes since the branch left its \
-                upstream, or since the parent of HEAD when it has none, unless you pass a base.",
+            "description": "Ask the user to review the commit at HEAD, and the running product if there is one: \
+                work you committed (as a draft commit that is not pushed), or someone else's commit, branch or pull \
+                request you checked out. The commit opens in Agent Review, which shows the changes it made to its \
+                parent, or all the changes since a base you pass.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "What the user reviews, when the commit's subject doesn't say: for \
-                            someone else's work, whose and what it is, such as \"PR #42 by John: Add pricing\".",
-                    },
                     "url": {
                         "type": "string",
                         "description": "Where the user can open the running product, such as \
@@ -373,16 +366,16 @@ fn tools() -> Value {
                     },
                     "base": {
                         "type": "string",
-                        "description": "What to compare the version to, when the default does not cover the work: \
-                            a commit or revision such as HEAD~3, or for a branch or pull request, the branch it \
-                            goes into, such as origin/main. The version is compared to where their histories meet.",
+                        "description": "What to compare the commit to, when the work spans more commits than \
+                            HEAD: a commit or revision such as HEAD~3, or for a branch or pull request, the branch it \
+                            goes into, such as origin/main. The commit is compared to where their histories meet.",
                     },
                     "replaces": {
                         "type": "integer",
-                        "description": "The review request this version takes the place of, given when you \
-                            requested it and in get_review: usually the one whose review you addressed. If the user \
-                            has it open, Agent Review switches to the new version by itself, keeping their \
-                            comments, and the earlier version leaves the list.",
+                        "description": "The review request this commit takes the place of, given when you \
+                            requested it and in get_review: usually the one whose review you addressed, when you \
+                            amended its commit or added one on top. The user's comments on it carry over to the new \
+                            commit.",
                     },
                     "project": project,
                 },
@@ -392,8 +385,8 @@ fn tools() -> Value {
         {
             "name": "get_review",
             "title": "Get review comments",
-            "description": "Get the open comments the user posted in Agent Review on the versions of this \
-                repository, with the lines or product pages each one is about, and screenshots of the product. \
+            "description": "Get the open comments the user posted in Agent Review on the commits and uncommitted \
+                changes of this repository, with the lines or product pages each one is about, and screenshots of the product. \
                 Address each comment and call resolve_comments with the ids of the comments you addressed, or do \
                 what the user asked with the review.",
             "inputSchema": { "type": "object", "properties": { "project": project } },
@@ -524,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_a_review_of_the_committed_version() {
+    fn requests_a_review_of_the_commit_at_head() {
         let repo = tempfile::tempdir().unwrap();
         let root = repo.path().canonicalize().unwrap();
         let queue_dir = tempfile::tempdir().unwrap();
@@ -541,7 +534,7 @@ mod tests {
         git(&root, &["add", "."]);
         git(&root, &["commit", "-q", "-m", "Start"]);
         let (text, error) = call(&server, "request_review", &json!({}));
-        assert!(!error && text.contains(": all of its changes."), "{text}");
+        assert!(!error && text.contains("(Start) as request 1. It opens"), "{text}");
 
         std::fs::write(root.join("b.txt"), "b\n").unwrap();
         git(&root, &["add", "."]);
@@ -554,23 +547,25 @@ mod tests {
 
         let requests = queue.requests();
         let [start, page] = &requests[..] else { panic!("{requests:?}") };
-        assert_eq!(start.base, git::EMPTY_TREE);
-        assert_eq!(page.base, start.commit);
-        assert_eq!((page.subject.as_str(), page.body.as_str()), ("Add a page", "With details."));
+        assert_eq!((start.base.as_deref(), page.base.as_deref()), (None, None));
+        assert_eq!(page.subject, "Add a page");
         assert_eq!(page.url.as_deref(), Some("http://localhost:5173"));
 
+        // The parent as the base is the commit alone; an earlier one, everything since.
         let (_, error) = call(&server, "request_review", &json!({ "base": "HEAD~1" }));
         assert!(!error);
-        assert_eq!(queue.requests()[2].base, start.commit);
+        assert_eq!(queue.requests()[2].base, None);
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-q", "-m", "Add c"]);
+        let (text, error) = call(&server, "request_review", &json!({ "base": "HEAD~2" }));
+        assert!(!error && text.contains(&format!("with all the changes since {}", start.short_id())), "{text}");
+        assert!(text.contains("request_review again with replaces: 4."), "{text}");
+        assert_eq!(queue.requests()[3].base.as_ref(), Some(&start.commit));
         let (text, error) = call(&server, "request_review", &json!({ "base": "nope" }));
         assert!(error && text.contains("nope is not a commit"), "{text}");
-        let (text, error) = call(&server, "request_review", &json!({ "title": "PR #42 by John: Add a page" }));
-        assert!(!error && text.contains("(PR #42 by John: Add a page) as request 4"), "{text}");
-        assert!(text.contains("request_review again with replaces: 4."), "{text}");
-        assert_eq!(queue.requests()[3].subject, "PR #42 by John: Add a page");
 
         let (text, error) = call(&server, "request_review", &json!({ "replaces": 4 }));
-        assert!(!error && text.contains("as request 5") && text.contains("takes the place of request 4"), "{text}");
+        assert!(!error && text.contains("as request 5") && text.contains("takes the place of request 4: the user's"));
         assert_eq!(queue.requests()[4].replaces, Some(4));
         let (text, error) = call(&server, "request_review", &json!({ "replaces": 9 }));
         assert!(error && text.contains("There is no review request 9 to replace"), "{text}");
@@ -589,7 +584,7 @@ mod tests {
         };
         queue.post(Some(commit), [comment(1, "src/parse.rs", None, "Handle errors.")], 1).unwrap();
         queue.post(None, [comment(2, "README.md", None, "Document it.")], 2).unwrap();
-        let version = ReviewedCommit {
+        let range = ReviewedCommit {
             id: "fedcba9876543210".into(),
             subject: "Add a page".into(),
             base: Some("0".into()),
@@ -602,7 +597,7 @@ mod tests {
             screenshot: Some(shot.display().to_string()),
             ..comment(4, "", None, "Bigger.")
         };
-        queue.post(Some(version), [comment(3, "page.html", None, "Center it."), on_page], 3).unwrap();
+        queue.post(Some(range), [comment(3, "page.html", None, "Center it."), on_page], 3).unwrap();
 
         let (text, _) = call(&server, "get_review", &json!({}));
         let uncommitted = text.find("## Uncommitted changes\n\n### `README.md`\n\n- **File** (id 2)").unwrap();
@@ -611,7 +606,7 @@ mod tests {
             .unwrap();
         assert!(uncommitted < commit, "{text}");
         let shown = format!(
-            "## Version fedcba9876543210 (Add a page), review request 3\n\n### The running product\n\n- **Page** (id 4): \
+            "## Commit fedcba9876543210 (Add a page), with the changes since 0, review request 3\n\n### The running product\n\n- **Page** (id 4): \
              `http://localhost:5173/`\n  Screenshot, drawn on: `{}`\n  Bigger.\n\n### `page.html`",
             shot.display()
         );

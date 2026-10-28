@@ -39,6 +39,7 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="1.0.0-alpha.7" date="2026-10-28" type="development"/>
     <release version="1.0.0-alpha.6" date="2026-10-21" type="development"/>
     <release version="1.0.0-alpha.5" date="2026-10-21" type="development"/>
     <release version="1.0.0-alpha.4" date="2026-10-20" type="development"/>
