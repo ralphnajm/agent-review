@@ -4,7 +4,7 @@
 
 # Agent Review
 
-**Review what your coding agent built: the running product and the code, side by side, with your feedback handed straight back.**
+**Review what your coding agent built, not just the code it wrote: click through the running product, draw on what needs changing, and hand your feedback straight back.**
 
 [![CI](https://github.com/ralphnajm/agent-review/actions/workflows/ci.yml/badge.svg)](https://github.com/ralphnajm/agent-review/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ralphnajm/agent-review)](https://github.com/ralphnajm/agent-review/releases/latest)
@@ -14,12 +14,15 @@
 
 ![Agent Review showing a project's changes: reviewed files collapsed to their header, a signed comment inline under the line it is about, the comment button on a hovered line, and the file list with review checkmarks](data/screenshots/review.png)
 
-Coding agents build whole features, fast, and reading every line isn't the only way to check
-them. Agent Review is a small native Linux desktop app in which you review what your agent
-built the way you'd review a colleague's work: when it finishes, it commits the work and asks
-you to review that *commit*. You click through the running product inside the app, draw on
-screenshots of whatever needs changing, read the code changes beside it, and hand the agent all
-your feedback at once.
+Coding agents build whole products and features, fast. Whether you're vibe coding or shipping
+production code, the first question is the same: does it work, and is it what you wanted? Code
+review tools only show you the diff. Agent Review shows you the product.
+
+It's a small native Linux desktop app in which you review your agent's work the way you'd
+review a colleague's: when the agent finishes, it commits the work, starts the product and asks
+you to review that version. You click through the running product inside the app, freeze any
+page into a screenshot and draw on it what's wrong, read the code changes when you want to, and
+hand the agent all your feedback at once, screenshots included.
 
 Anything your agent can check out can be reviewed this way: a colleague's commit, a branch or a
 pull request too. Your agent runs it, you review it, and the agent passes your review on, to
@@ -34,9 +37,10 @@ you open a product to review.
 1. Connect your agent to Agent Review and install the [agent skill](#connecting-your-agent).
 2. Ask your agent for a feature. When it's done, it commits the work, starts the product, and
    asks you to review that commit. The commit opens in Agent Review.
-3. Click through the product. Press the pencil to freeze the page into a screenshot, and draw
-   and write on it what you want changed. Switch to **Code** to read the changes and comment on
-   lines and files. Nothing is sent until you say so.
+3. Click through the product as a user would. Press the pencil to freeze the page into a
+   screenshot, and draw and write on it what you want changed. If you want to, switch to
+   **Code** to read the changes and comment on lines and files. Nothing is sent until you say
+   so.
 4. Press **Post Review** and tell the agent to pull your review. It gets the whole batch,
    screenshots included, addresses it, and asks you to review the next commit. (No MCP?
    **Copy Feedback** and paste instead.)
@@ -44,14 +48,6 @@ you open a product to review.
 
 ## Features
 
-- **Projects:** open any Git repository (or a sub-folder of one) and switch between recent
-  projects at any time.
-- **Commits:** the button above the file panel lists the working directory's uncommitted
-  changes, then the commits of the branch you're on, each with its author, and a green check
-  on those you reviewed: every file marked reviewed, or a review posted. Pick one to review it.
-  When your agent asks you to review a commit, it opens by itself, with the product running
-  from it. When the agent addresses your review in a new commit, your comments and reviewed
-  files carry over to it. The commit's description stays tucked away behind **Description**.
 - **Product:** the commit's product opens inside Agent Review, in an embedded browser with
   back, forward and reload. **Product** and **Code** at the top switch between it and the code.
   Logins to your product are remembered, and right-click **Inspect Element** opens the web
@@ -61,6 +57,14 @@ you open a product to review.
   right where you put them. Select anything to move, resize, restyle, reorder or delete it.
   **Done** adds it to your review: the screenshot reaches your agent as an image, with what you
   wrote on it.
+- **Projects:** open any Git repository (or a sub-folder of one) and switch between recent
+  projects at any time.
+- **Commits:** the button above the file panel lists the working directory's uncommitted
+  changes, then the commits of the branch you're on, each with its author, and a green check
+  on those you reviewed: every file marked reviewed, or a review posted. Pick one to review it.
+  When your agent asks you to review a commit, it opens by itself, with the product running
+  from it. When the agent addresses your review in a new commit, your comments and reviewed
+  files carry over to it. The commit's description stays tucked away behind **Description**.
 - **Code:** every file the commit changed in one scrolling view, like a pull request. Each
   file's header sticks to the top while you scroll through it, and clicking a file in the file
   panel jumps straight to it. Syntax highlighted, with old and new line numbers, find across
