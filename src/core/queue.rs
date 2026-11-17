@@ -1,6 +1,7 @@
-//! Posted reviews: the comments the user hands to the agent, which pulls them
-//! through the MCP server (see [`crate::core::mcp`]) and resolves them. And
-//! review requests, in which the agent asks the user to review a commit.
+//! Posted reviews: the comments the user hands to the agent, or their
+//! approval, which the agent pulls through the MCP server (see
+//! [`crate::core::mcp`]), resolving and replying to the comments. And review
+//! requests, in which the agent asks the user to review a commit.
 //!
 //! Each repository has a queue directory under the XDG data dir. The app
 //! writes a review once, when it is posted; the MCP server records what the
@@ -35,7 +36,8 @@ pub struct PostedComment {
     pub body: String,
 }
 
-/// A batch of comments posted together. Never changed once written.
+/// A batch of comments posted together, or an approval, which has none.
+/// Never changed once written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostedReview {
     pub id: u64,
@@ -43,6 +45,9 @@ pub struct PostedReview {
     /// The commit reviewed; `None` for the uncommitted changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<ReviewedCommit>,
+    /// The user approved the work, without comments.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approved: bool,
     pub comments: Vec<PostedComment>,
 }
 
@@ -60,6 +65,10 @@ pub struct ReviewRequest {
     /// Where the running product can be opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The changes are to the code only: the product, even if it runs at
+    /// `url`, is not part of the review.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code_only: bool,
     /// The earlier request this one takes the place of, such as the commit
     /// whose review the agent addressed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,6 +78,11 @@ pub struct ReviewRequest {
 impl ReviewRequest {
     pub fn short_id(&self) -> &str {
         self.commit.get(..7).unwrap_or(&self.commit)
+    }
+
+    /// Where the product to review runs, unless the review is of the code only.
+    pub fn product_url(&self) -> Option<&str> {
+        self.url.as_deref().filter(|_| !self.code_only)
     }
 }
 
@@ -100,6 +114,16 @@ pub struct Progress {
     /// When each resolved comment was resolved, by comment id.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved: BTreeMap<u64, i64>,
+    /// The agent's replies to comments, oldest first, by comment id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub replies: BTreeMap<u64, Vec<Reply>>,
+}
+
+/// What the agent answered to a comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reply {
+    pub at: i64,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +156,17 @@ impl Entry {
     /// Comments not resolved yet.
     pub fn open(&self) -> impl Iterator<Item = &PostedComment> {
         self.review.comments.iter().filter(|c| !self.progress.resolved.contains_key(&c.id))
+    }
+
+    /// The agent's replies to `comment`, oldest first.
+    pub fn replies(&self, comment: &PostedComment) -> &[Reply] {
+        self.progress.replies.get(&comment.id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether the agent has something to pull: open comments, or an
+    /// approval it has not seen yet.
+    pub fn is_pending(&self) -> bool {
+        if self.review.approved { self.progress.pulled_at.is_none() } else { self.open().next().is_some() }
     }
 }
 
@@ -183,9 +218,23 @@ impl Queue {
         let id = entries.last().map_or(0, |e| e.review.id) + 1;
         let first_comment = entries.iter().flat_map(|e| &e.review.comments).map(|c| c.id).max().unwrap_or(0) + 1;
         let comments = (first_comment..).zip(comments).map(|(id, comment)| PostedComment { id, ..comment }).collect();
-        let review = PostedReview { id, posted_at: now, commit, comments };
+        let review = PostedReview { id, posted_at: now, commit, approved: false, comments };
         store::write_json(&self.review_file(id), &review)?;
         Ok(review)
+    }
+
+    /// Posts the user's approval of `commit`, or of the uncommitted changes.
+    pub fn approve(&self, commit: Option<ReviewedCommit>, now: i64) -> std::io::Result<PostedReview> {
+        let id = self.load().last().map_or(0, |e| e.review.id) + 1;
+        let review = PostedReview { id, posted_at: now, commit, approved: true, comments: Vec::new() };
+        store::write_json(&self.review_file(id), &review)?;
+        Ok(review)
+    }
+
+    /// Reviews posted after `after` (a review id) that the agent has not
+    /// pulled yet, oldest first.
+    pub fn unpulled(&self, after: u64) -> Vec<Entry> {
+        self.load().into_iter().filter(|e| e.review.id > after && e.progress.pulled_at.is_none()).collect()
     }
 
     /// Takes back review `id` unless the agent has pulled it already.
@@ -227,6 +276,29 @@ impl Queue {
         }
         resolved.sort_unstable();
         Ok(resolved)
+    }
+
+    /// Adds the agent's replies to comments, by comment id; returns the ids
+    /// of the comments answered to.
+    pub fn reply(&self, replies: &[(u64, String)], now: i64) -> std::io::Result<Vec<u64>> {
+        let mut answered = Vec::new();
+        for entry in self.load() {
+            let found: Vec<&(u64, String)> =
+                replies.iter().filter(|(id, _)| entry.review.comments.iter().any(|c| c.id == *id)).collect();
+            if found.is_empty() {
+                continue;
+            }
+            let mut progress = entry.progress;
+            progress.pulled_at.get_or_insert(now);
+            for (id, body) in found {
+                progress.replies.entry(*id).or_default().push(Reply { at: now, body: body.clone() });
+                answered.push(*id);
+            }
+            store::write_json(&self.progress_file(entry.review.id), &progress)?;
+        }
+        answered.sort_unstable();
+        answered.dedup();
+        Ok(answered)
     }
 
     /// Every review request, oldest first.
@@ -315,6 +387,39 @@ mod tests {
         assert_eq!(statuses, [Status::Resolved, Status::PickedUp, Status::Resolved]);
         assert_eq!(entries[0].progress.pulled_at, Some(12));
         assert_eq!(entries[1].open().count(), 0);
+        assert!(entries[0].is_pending() && !entries[1].is_pending());
+    }
+
+    #[test]
+    fn replies_to_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::at(dir.path().to_path_buf());
+        queue.post(None, [comment(1, "Rename"), comment(2, "Why?")], 1).unwrap();
+        let replies = [(2, "To keep it fast.".to_owned()), (2, "See the benchmark.".to_owned()), (9, "?".into())];
+        assert_eq!(queue.reply(&replies, 5).unwrap(), [2]);
+        let entry = &queue.load()[0];
+        let bodies: Vec<&str> = entry.replies(&entry.review.comments[1]).iter().map(|r| r.body.as_str()).collect();
+        assert_eq!(bodies, ["To keep it fast.", "See the benchmark."]);
+        assert_eq!(entry.replies(&entry.review.comments[0]), []);
+        // Replying is not resolving, but the agent has seen the review.
+        assert_eq!(entry.status(&entry.review.comments[1]), Status::PickedUp);
+    }
+
+    #[test]
+    fn approvals_wait_until_pulled() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::at(dir.path().to_path_buf());
+        let review = queue.post(None, [comment(1, "Rename")], 1).unwrap();
+        let approval = queue.approve(None, 2).unwrap();
+        assert_eq!((review.id, approval.id), (1, 2));
+        assert!(approval.approved && approval.comments.is_empty());
+        let ids = |entries: Vec<Entry>| entries.iter().map(|e| e.review.id).collect::<Vec<_>>();
+        assert_eq!(ids(queue.unpulled(0)), [1, 2]);
+        assert_eq!(ids(queue.unpulled(1)), [2]);
+        assert!(queue.load()[1].is_pending());
+        queue.mark_pulled(&[2], 3).unwrap();
+        assert!(!queue.load()[1].is_pending());
+        assert_eq!(ids(queue.unpulled(0)), [1]);
     }
 
     #[test]
@@ -329,6 +434,7 @@ mod tests {
             subject: "Add the parser".into(),
             base: Some("fedcba9876543210".into()),
             url: Some("http://localhost:5173".into()),
+            code_only: false,
             replaces: None,
         };
         assert_eq!(queue.request(request.clone()).unwrap().id, 1);
@@ -339,6 +445,8 @@ mod tests {
         assert_eq!(requests.iter().map(|r| r.id).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(requests[0], ReviewRequest { id: 1, ..request.clone() });
         assert_eq!(requests[0].short_id(), "0123456");
+        assert_eq!(requests[0].product_url(), Some("http://localhost:5173"));
+        assert_eq!(ReviewRequest { code_only: true, ..request.clone() }.product_url(), None);
         assert_eq!(queue.load().len(), 1);
 
         // A request taking the place of others, through as many as were made.

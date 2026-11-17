@@ -1,6 +1,6 @@
 ---
 name: agent-review
-description: Hand work to the user for review in Agent Review, a desktop app in which they click through the running product, draw on screenshots of it and read the code changes, then pull their review back and act on it. Use it whenever the agent-review MCP server's tools (request_review, get_review, resolve_comments) are available and you finish a feature, fix or other set of changes the user asked for; whenever the user wants to review someone else's work, such as a colleague's commit, a branch or a pull request ("I want to review John's last commit", "let me review PR 42"); and whenever the user mentions Agent Review, their review, review comments, "pull my review", or asks you to get something ready for them to look at, even if they don't name the app.
+description: Hand work to the user for review in Agent Review, a desktop app in which they click through the running product, draw on screenshots of it and read the code changes, then pull their review back and act on it. Use it whenever the agent-review MCP server's tools (request_review, get_review, reply_to_comments, resolve_comments) are available and you finish a feature, fix or other set of changes the user asked for; whenever the user wants to review someone else's work, such as a colleague's commit, a branch or a pull request ("I want to review John's last commit", "let me review PR 42"); and whenever the user mentions Agent Review, their review, review comments, "pull my review", or asks you to get something ready for them to look at, even if they don't name the app.
 ---
 
 # Agent Review
@@ -10,13 +10,14 @@ uncommitted changes in the working directory, together with the product
 running from them if there is one. It lists the commits of the branch checked
 out, with a check on those the user reviewed. The user clicks through the product inside the app, draws on
 screenshots of it (marker, arrows, boxes, sticky notes, text) and comments on
-the code's lines and files. When they post the review, you pull it and do what
-they ask with it: address it yourself, or pass it on, for example to the pull
-request it is about. Nothing reaches you unless you pull it.
+the code's lines and files. Then they post their review, or approve the work
+if it needs no changes. You pull it and do what they ask with it: address it
+yourself, replying to their comments as you go, or pass it on, for example to
+the pull request it is about. Nothing reaches you unless you pull it.
 
 You talk to the app through its MCP server, `agent-review --mcp`, which gives
-you three tools: `request_review`, `get_review` and `resolve_comments`. If they
-are missing, see [Setup](#setup).
+you four tools: `request_review`, `get_review`, `reply_to_comments` and
+`resolve_comments`. If they are missing, see [Setup](#setup).
 
 ## Hand over your own work
 
@@ -35,17 +36,29 @@ edit: each request opens the commit in front of the user, so it should mean
    after your command returns, and check that the address answers, for example
    with `curl -sf <url>`. If it was already running, make sure it serves the
    committed code (dev servers usually reload by themselves).
-3. **Call `request_review`** with `url`: the address of the page the change is
-   about, such as `http://localhost:5173/pricing`, so the review opens right
-   where it matters. Leave `url` out when there is nothing to run, such as a
-   library or a command-line tool. The user sees the changes the commit made;
+3. **Call `request_review`** with `review`: `"product"` when the changes show
+   in the running product (pages, layout, behavior the user can click
+   through), and `url`: the address of the page the change is about, such as
+   `http://localhost:5173/pricing`, so the review opens right where it
+   matters. Pass `review: "code"` when they don't show (internals, a backend,
+   tests, tooling): the user reviews the code only, even if the product runs.
+   Leave `url` out when there is nothing to run, such as a library or a
+   command-line tool. The user sees the changes the commit made;
    pass `base` (a commit or revision such as `HEAD~3`) when the work spans
    more commits and they should see it all at once. The reply gives the
    request's number: you pass it as `replaces` when you hand over the next
    commit.
-4. **Tell the user** in a sentence that the commit is ready in Agent Review,
-   then stop. Don't wait or poll for the review: the user will ask you to pull
-   it when they have posted it.
+4. **Wait for the review, if you can.** The reply to `request_review` gives a
+   command, `agent-review --wait <repository>`, that ends as soon as the user
+   posts their review or approves the work, saying which. If you can run a
+   command in the background and be told when it ends (in Claude Code, Bash
+   with `run_in_background`), run it that way, so you pick up the review the
+   moment it is posted and the user doesn't have to ask. Don't run it in the
+   foreground, and don't poll `get_review` instead: the user may take a while.
+   If a waiter you started earlier is still running, don't start another.
+5. **Tell the user** in a sentence that the commit is ready in Agent Review,
+   and that you'll pick up their review when they post it (or, without the
+   waiter, that they can ask you to pull it). Then stop.
 
 If `request_review` warns about uncommitted changes, they are not part of the
 commit: commit them if they belong to it and request again.
@@ -75,16 +88,21 @@ branch, a pull request. You prepare it like your own work, without committing.
      compared to its parent. The app shows each commit's author, so the user
      sees whose work it is.
    - `url`, as for your own work.
-5. **Tell the user** it is ready to review, and stop.
+5. **Wait for the review** as for your own work, and **tell the user** it is
+   ready to review. Then stop.
 
 Once they have posted their review and you have done what they asked with it,
 go back to the branch the user was on, and restore what you stashed.
 
 ## Pull a review and act on it
 
-When the user asks you to pull, fetch or check their review:
+When the user asks you to pull, fetch or check their review, or the wait
+command ends:
 
-1. **Call `get_review`.** It returns the open comments as Markdown, grouped by
+1. **Call `get_review`.** If the user approved the work, it says so: it needs
+   no more changes. Do what they told you to do once they approve, such as
+   pushing it or opening a pull request; if they didn't say, tell them you saw
+   the approval and ask what's next. Otherwise, it returns the open comments as Markdown, grouped by
    the commit they are about (its id and subject), or the uncommitted
    changes, each with an id, and
    then the screenshots as images:
@@ -104,6 +122,12 @@ When the user asks you to pull, fetch or check their review:
      if you disagree or something is unclear, say so instead of guessing. Fix
      the root cause rather than the one spot a comment points at when the same
      problem appears elsewhere.
+   - **Reply as you go** with `reply_to_comments`: the user follows your
+     progress in Agent Review while you work and reads your replies under
+     their comments. Once you have addressed a comment, reply in a sentence
+     with what you changed, and set `resolve` on it. Answer questions there,
+     and reply without resolving when you disagree or need the user to
+     decide.
    - Then hand over the next commit: amend the draft commit (`git commit
      --amend`), or add a commit on top of it if the user prefers to keep the
      history; make sure the product runs the new code; and call
@@ -111,7 +135,7 @@ When the user asks you to pull, fetch or check their review:
      you addressed, which `get_review` gives with each commit ("review
      request 3"). The new commit opens in Agent Review, with the user's
      comments and reviewed files carried over, and files that changed open
-     again for another look.
+     again for another look. Then wait for the next review as before.
    - Comments on the uncommitted changes are about the working directory as
      it was: address them in the files, and commit when the user asks.
 
@@ -128,9 +152,10 @@ When the user asks you to pull, fetch or check their review:
      have, with the comments grouped by file and page.
    - **Changes yourself**, on the author's branch, if the user asks you to fix
      things rather than report them.
-3. **Call `resolve_comments`** with the ids of the comments you dealt with,
-   whether you addressed them or passed them on. The user sees them as
-   resolved. Leave out the ones you didn't deal with, and tell the user why.
+3. **Resolve the comments you dealt with**, whether you addressed them or
+   passed them on: set `resolve` on your replies, or call `resolve_comments`
+   with their ids. The user sees them as resolved. Leave out the ones you
+   didn't deal with, and say why in a reply.
 
 ## Setup
 
@@ -140,6 +165,4 @@ command `agent-review --mcp` (stdio), for example
 `claude mcp add --scope user agent-review -- agent-review --mcp` in Claude
 Code, or an `mcpServers` entry with `"command": "agent-review", "args":
 ["--mcp"]` in agents configured with JSON. The app itself is at
-https://github.com/ralphnajm/agent-review. Without the server, the user can
-still copy their review from the app and paste it to you: act on it the same
-way.
+https://github.com/ralphnajm/agent-review.

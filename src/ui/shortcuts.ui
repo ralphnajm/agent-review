@@ -37,7 +37,6 @@
           <object class="GtkShortcutsGroup">
             <property name="title">Feedback</property>
             <child><object class="GtkShortcutsShortcut"><property name="title">Post review</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;p</property></object></child>
-            <child><object class="GtkShortcutsShortcut"><property name="title">Copy feedback</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;c</property></object></child>
             <child><object class="GtkShortcutsShortcut"><property name="title">Posted reviews</property><property name="accelerator">&lt;Control&gt;&lt;Shift&gt;r</property></object></child>
           </object>
         </child>

@@ -1,6 +1,6 @@
 //! A Model Context Protocol server, run with `agent-review --mcp`, through
 //! which a coding agent asks the user to review a commit, pulls the reviews
-//! the user posted and resolves their comments.
+//! and approvals the user posted, and resolves and replies to their comments.
 //!
 //! The agent starts the server itself and talks to it over stdio, one
 //! JSON-RPC message per line. It works whether or not the app is running:
@@ -17,8 +17,9 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::core::feedback;
 use crate::core::git::{self, Repo};
-use crate::core::queue::{PostedComment, Queue, ReviewRequest};
+use crate::core::queue::{Entry, PostedComment, Queue, ReviewRequest};
 use crate::core::review::ReviewedCommit;
+use crate::core::wait;
 
 /// Protocol revisions the server can speak; the newest is offered by default.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
@@ -26,11 +27,14 @@ const PROTOCOL_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", 
 const INSTRUCTIONS: &str = "Agent Review is a desktop app in which the user reviews the commits of their \
 repository, and the uncommitted changes, with the running product beside the code, and leaves comments on them, \
 screenshots of the product included. When you finish a set of changes for the user to review, commit them as a draft \
-commit that is not pushed, make sure the product is running if it has one, and call request_review: the commit opens \
-in Agent Review. To let the user review someone else's work (a commit, a branch, a pull request), check it out, run \
+commit that is not pushed, make sure the product is running if it has one, and call request_review, saying whether \
+the user reviews the running product or only the code: the commit opens in Agent Review. If you can run a command in \
+the background and be told when it ends, run the wait command request_review gives you, so you hear as soon as the \
+user posts their review or approves the work. To let the user review someone else's work (a commit, a branch, a pull request), check it out, run \
 it, and call request_review, with a base for a branch or a pull request. When the user asks you to pull, fetch or \
-check their review, call get_review, then do what they ask with it: address each comment and call resolve_comments \
-with the ids of those you addressed, or pass the review on, for example to the pull request. When you address a \
+check their review, or the wait command ends, call get_review, then do what they ask with it: address each comment, \
+and call reply_to_comments to answer or report on a comment, and resolve_comments with the ids of those you \
+addressed, or pass the review on, for example to the pull request. When you address a \
 review of your own commit, amend it or add a commit on top of it, and call request_review again with replaces set to \
 the request you addressed, so the user's comments carry over to the new commit.";
 
@@ -96,6 +100,7 @@ impl Server {
                     .collect()
             }),
             Some("resolve_comments") => self.resolve_comments(&arguments).map(|text| vec![text_content(&text)]),
+            Some("reply_to_comments") => self.reply_to_comments(&arguments).map(|text| vec![text_content(&text)]),
             other => Err(anyhow::anyhow!("Unknown tool {}", other.unwrap_or("(none)"))),
         };
         match outcome {
@@ -130,6 +135,18 @@ impl Server {
         let info = repo.commit(&commit)?;
         let text = |key: &str| arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty());
         let url = text("url");
+        let code_only = match text("review") {
+            None => url.is_none(),
+            Some("code") => true,
+            Some("product") => {
+                anyhow::ensure!(
+                    url.is_some(),
+                    "A review of the product needs the url it runs at. Start it and pass url, or pass review: \"code\""
+                );
+                false
+            }
+            Some(other) => anyhow::bail!("review must be \"product\" or \"code\", not {other:?}"),
+        };
         let queue = (self.queue_for)(&repo.root);
         let replaces = match arguments.get("replaces") {
             None | Some(Value::Null) => None,
@@ -149,6 +166,7 @@ impl Server {
             subject: info.subject,
             base,
             url: url.map(str::to_owned),
+            code_only,
             replaces,
         };
         let request = queue.request(request).context("Could not save the review request")?;
@@ -163,17 +181,24 @@ impl Server {
             let since = if base == git::EMPTY_TREE { "the start" } else { base.get(..7).unwrap_or(base) };
             let _ = write!(text, ", with all the changes since {since}");
         }
-        if let Some(url) = &request.url {
-            let _ = write!(text, ", and the product running at {url}");
+        match (request.product_url(), request.code_only) {
+            (Some(url), _) => {
+                let _ = write!(text, ", and the product running at {url}");
+            }
+            (None, true) => text.push_str(", as a review of the code only"),
+            (None, false) => {}
         }
         if let Some(replaced) = request.replaces {
             let _ = write!(text, ". It takes the place of request {replaced}: the user's comments carry over to it");
         }
         let _ = write!(
             text,
-            ". It opens in Agent Review, where they review it and post their comments when done. When they ask you \
-             to, call get_review. To address their comments, amend the commit or add a commit on top of it, then \
-             call request_review again with replaces: {}.",
+            ". It opens in Agent Review, where they review it, then post their comments or approve it.\n\nTo hear \
+             as soon as they do, run this command in the background, if you can run one and be told when it ends: \
+             {}\nIt ends once they post, saying what. Otherwise, wait until they ask you to pull their review. Then \
+             call get_review. To address their comments, amend the commit or add a commit on top of it, then call \
+             request_review again with replaces: {}.",
+            wait::command(&repo.root),
             request.id
         );
         if repo.has_uncommitted_changes().unwrap_or(false) {
@@ -185,23 +210,32 @@ impl Server {
         Ok(text)
     }
 
-    /// The open comments as a Markdown prompt, and the screenshots they name.
+    /// The approvals not pulled yet and the open comments as a Markdown
+    /// prompt, and the screenshots the comments name.
     fn get_review(&self, arguments: &Value) -> Result<(String, Vec<String>)> {
         let (root, queue) = self.queue(arguments)?;
         let entries = queue.load();
+        let approvals: Vec<&Entry> = entries.iter().filter(|e| e.review.approved && e.is_pending()).collect();
         let open: Vec<(Option<&ReviewedCommit>, &PostedComment)> =
             entries.iter().flat_map(|e| e.open().map(|c| (e.review.commit.as_ref(), c))).collect();
-        if open.is_empty() {
+        if open.is_empty() && approvals.is_empty() {
             let text = format!(
                 "There are no open review comments for {}. The user has not posted any, or they are all resolved.",
                 root.display()
             );
             return Ok((text, Vec::new()));
         }
-        let pulled: Vec<u64> = entries.iter().filter(|e| e.open().next().is_some()).map(|e| e.review.id).collect();
+        let pulled: Vec<u64> = entries.iter().filter(|e| e.is_pending()).map(|e| e.review.id).collect();
         queue.mark_pulled(&pulled, crate::core::now()).context("Could not record that the review was pulled")?;
+        let mut text = render_approvals(&approvals);
+        if !open.is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&render(&root, &open));
+        }
         let screenshots = open.iter().filter_map(|(_, c)| c.screenshot.clone()).collect();
-        Ok((render(&root, &open), screenshots))
+        Ok((text, screenshots))
     }
 
     fn resolve_comments(&self, arguments: &Value) -> Result<String> {
@@ -225,6 +259,63 @@ impl Server {
         }
         Ok(text)
     }
+
+    fn reply_to_comments(&self, arguments: &Value) -> Result<String> {
+        let items = arguments
+            .get("replies")
+            .and_then(Value::as_array)
+            .context("Pass the replies as `replies`, each with the comment's `id` and your `text`")?;
+        let mut replies = Vec::new();
+        let mut resolve = Vec::new();
+        for item in items {
+            let id = item.get("id").and_then(Value::as_u64).context("Each reply needs the comment's `id`")?;
+            let body = item.get("text").and_then(Value::as_str).map(str::trim).unwrap_or_default();
+            anyhow::ensure!(!body.is_empty(), "The reply to comment {id} needs a `text`");
+            replies.push((id, body.to_owned()));
+            if item.get("resolve").and_then(Value::as_bool) == Some(true) {
+                resolve.push(id);
+            }
+        }
+        let (_, queue) = self.queue(arguments)?;
+        let now = crate::core::now();
+        let answered = queue.reply(&replies, now).context("Could not save the replies")?;
+        let resolved = queue.resolve(&resolve, now).context("Could not save the resolved comments")?;
+        let mut text = if answered.is_empty() {
+            "No replies were saved.".to_owned()
+        } else {
+            format!("Replied to {}.", id_list(&answered))
+        };
+        if !resolved.is_empty() {
+            let _ = write!(text, " Resolved {}.", id_list(&resolved));
+        }
+        let unknown: Vec<u64> = replies.iter().map(|(id, _)| *id).filter(|id| !answered.contains(id)).collect();
+        if !unknown.is_empty() {
+            let _ = write!(text, " Unknown: {}.", id_list(&unknown));
+        }
+        Ok(text)
+    }
+}
+
+/// The approvals as Markdown, with what to do about them; empty without any.
+fn render_approvals(approvals: &[&Entry]) -> String {
+    let mut text = String::new();
+    for entry in approvals {
+        let what = entry.review.commit.as_ref().map_or_else(
+            || "the uncommitted changes".to_owned(),
+            |c| {
+                let request = c.request.map_or_else(String::new, |r| format!(", review request {r}"));
+                format!("commit {} ({}){request}", c.id, c.subject)
+            },
+        );
+        let _ = writeln!(text, "The user approved {what}: it needs no more changes.");
+    }
+    if !text.is_empty() {
+        text.push_str(
+            "If they told you what to do once they approve, such as pushing the commit or opening a pull request, \
+             do it now. Otherwise, tell them you saw the approval and ask what comes next.\n",
+        );
+    }
+    text
 }
 
 /// Comments on one file, by path.
@@ -364,6 +455,15 @@ fn tools() -> Value {
                             http://localhost:5173. Make sure it is running first. Leave it out when there is \
                             nothing to run.",
                     },
+                    "review": {
+                        "type": "string",
+                        "enum": ["product", "code"],
+                        "description": "What the user reviews: \"product\" when the changes show in the \
+                            running product (pages, layout, behavior the user can click through), which opens beside \
+                            the code and needs url; \"code\" when they don't show (internals, a backend, tests, \
+                            tooling), for a review of the code only. Defaults to \"product\" with a url, \"code\" \
+                            without.",
+                    },
                     "base": {
                         "type": "string",
                         "description": "What to compare the commit to, when the work spans more commits than \
@@ -386,9 +486,10 @@ fn tools() -> Value {
             "name": "get_review",
             "title": "Get review comments",
             "description": "Get the open comments the user posted in Agent Review on the commits and uncommitted \
-                changes of this repository, with the lines or product pages each one is about, and screenshots of the product. \
-                Address each comment and call resolve_comments with the ids of the comments you addressed, or do \
-                what the user asked with the review.",
+                changes of this repository, with the lines or product pages each one is about, and screenshots of \
+                the product, and the approvals they posted since you last pulled. Address each comment, reply to \
+                it with reply_to_comments and call resolve_comments with the ids of the comments you addressed, or \
+                do what the user asked with the review.",
             "inputSchema": { "type": "object", "properties": { "project": project } },
             "annotations": { "readOnlyHint": false, "idempotentHint": true },
         },
@@ -410,6 +511,36 @@ fn tools() -> Value {
                 "required": ["ids"],
             },
             "annotations": { "readOnlyHint": false, "idempotentHint": true },
+        },
+        {
+            "name": "reply_to_comments",
+            "title": "Reply to review comments",
+            "description": "Answer review comments: say what you changed for one, answer a question, or explain \
+                why you disagree or what is unclear. The user reads your replies under their comments in Agent \
+                Review while you work. Set resolve on the replies to comments you addressed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "replies": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "integer", "description": "The comment's id, as shown by get_review." },
+                                "text": { "type": "string", "description": "Your reply, in a sentence or two." },
+                                "resolve": {
+                                    "type": "boolean",
+                                    "description": "Also mark the comment resolved: you addressed it.",
+                                },
+                            },
+                            "required": ["id", "text"],
+                        },
+                    },
+                    "project": project,
+                },
+                "required": ["replies"],
+            },
+            "annotations": { "readOnlyHint": false, "idempotentHint": false },
         },
     ])
 }
@@ -462,7 +593,7 @@ mod tests {
             serde_json::from_str(&server.handle(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap()).unwrap();
         let names: Vec<&str> =
             list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["request_review", "get_review", "resolve_comments"]);
+        assert_eq!(names, ["request_review", "get_review", "resolve_comments", "reply_to_comments"]);
 
         let unknown: Value =
             serde_json::from_str(&server.handle(r#"{"jsonrpc":"2.0","id":3,"method":"nope"}"#).unwrap()).unwrap();
@@ -504,6 +635,50 @@ mod tests {
         assert!(error && text.contains("`ids`"));
     }
 
+    #[test]
+    fn replies_to_comments_and_resolves_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server(dir.path());
+        let queue = Queue::at(dir.path().to_path_buf());
+        queue.post(None, [comment(1, "a.rs", None, "Rename."), comment(2, "a.rs", None, "Why?")], 1).unwrap();
+        let replies = json!({ "replies": [
+            { "id": 1, "text": "Renamed it to parse.", "resolve": true },
+            { "id": 2, "text": "To keep it fast." },
+            { "id": 7, "text": "?" },
+        ] });
+        let (text, error) = call(&server, "reply_to_comments", &replies);
+        assert!(!error);
+        assert_eq!(text, "Replied to comments 1, 2. Resolved comment 1. Unknown: comment 7.");
+        let entry = &queue.load()[0];
+        assert_eq!(entry.replies(&entry.review.comments[1])[0].body, "To keep it fast.");
+        assert_eq!(entry.open().map(|c| c.id).collect::<Vec<_>>(), [2]);
+
+        let (text, error) = call(&server, "reply_to_comments", &json!({ "replies": [{ "id": 2, "text": " " }] }));
+        assert!(error && text.contains("needs a `text`"), "{text}");
+    }
+
+    #[test]
+    fn hands_over_approvals_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = server(dir.path());
+        let queue = Queue::at(dir.path().to_path_buf());
+        let commit = ReviewedCommit {
+            id: "0123456789abcdef".into(),
+            subject: "Add a page".into(),
+            base: None,
+            request: Some(2),
+        };
+        queue.approve(Some(commit), 1).unwrap();
+        let (text, _) = call(&server, "get_review", &json!({}));
+        assert!(
+            text.starts_with("The user approved commit 0123456789abcdef (Add a page), review request 2: it needs no"),
+            "{text}"
+        );
+        assert!(text.contains("tell them you saw the approval"));
+        let (text, _) = call(&server, "get_review", &json!({}));
+        assert!(text.starts_with("There are no open review comments"), "{text}");
+    }
+
     fn git(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -534,7 +709,7 @@ mod tests {
         git(&root, &["add", "."]);
         git(&root, &["commit", "-q", "-m", "Start"]);
         let (text, error) = call(&server, "request_review", &json!({}));
-        assert!(!error && text.contains("(Start) as request 1. It opens"), "{text}");
+        assert!(!error && text.contains("(Start) as request 1, as a review of the code only. It opens"), "{text}");
 
         std::fs::write(root.join("b.txt"), "b\n").unwrap();
         git(&root, &["add", "."]);
@@ -569,6 +744,18 @@ mod tests {
         assert_eq!(queue.requests()[4].replaces, Some(4));
         let (text, error) = call(&server, "request_review", &json!({ "replaces": 9 }));
         assert!(error && text.contains("There is no review request 9 to replace"), "{text}");
+
+        // What the user reviews: the product beside the code, or the code only.
+        let (text, error) = call(&server, "request_review", &json!({}));
+        assert!(!error && text.contains("as a review of the code only") && text.contains(" --wait "), "{text}");
+        assert!(queue.requests()[5].code_only);
+        let (text, error) = call(&server, "request_review", &json!({ "url": "http://localhost:1", "review": "code" }));
+        assert!(!error && text.contains("as a review of the code only"), "{text}");
+        assert_eq!(queue.requests()[6].product_url(), None);
+        let (text, error) = call(&server, "request_review", &json!({ "review": "product" }));
+        assert!(error && text.contains("needs the url it runs at"), "{text}");
+        let (text, error) = call(&server, "request_review", &json!({ "review": "both" }));
+        assert!(error && text.contains("must be \"product\" or \"code\""), "{text}");
     }
 
     #[test]

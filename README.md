@@ -41,9 +41,10 @@ you open a product to review.
    screenshot, and draw and write on it what you want changed. If you want to, switch to
    **Code** to read the changes and comment on lines and files. Nothing is sent until you say
    so.
-4. Press **Post Review** and tell the agent to pull your review. It gets the whole batch,
-   screenshots included, addresses it, and asks you to review the next commit. (No MCP?
-   **Copy Feedback** and paste instead.)
+4. Press **Post Review**, or **Approve** if there's nothing to change. An agent that waits for
+   your review picks it up right away; otherwise, tell it to pull your review. It gets the
+   whole batch, screenshots included, addresses it, replies to your comments, and asks you to
+   review the next commit. You follow along in **Posted Reviews** on the right.
 5. Repeat until you're happy (or until lunch).
 
 ## Features
@@ -82,15 +83,14 @@ you open a product to review.
   collapses to its header and the view moves on to the next file to review. Commenting on a
   file also marks it reviewed. If the file changes afterwards, it opens again, flagged for
   another look.
-- **Post Review:** queues all unsent comments for your agent, which pulls them through the
-  [MCP server](#connecting-your-agent), and marks the commit reviewed. Changed your mind?
-  Undo takes the review back until the agent pulls it.
-- **Posted reviews:** in the main menu, lists every review you posted, each comment marked
-  *Waiting*, *Picked up* or *Resolved*. It updates live as the agent works.
-- **Copy Feedback:** from the arrow next to Post Review, puts all unsent comments on the
-  clipboard as a Markdown prompt instead. The toast lets you mark them unsent again.
-- **Agent-agnostic:** reviews go through MCP, an open standard most coding agents support,
-  or through the clipboard, which works with any agent that accepts text.
+- **Post Review / Approve:** queues all unsent comments for your agent, which pulls them
+  through the [MCP server](#connecting-your-agent), and marks the commit reviewed. With no
+  comments, the button approves the work instead. Changed your mind? Undo takes it back until
+  the agent pulls it.
+- **Posted reviews:** a panel on the right, which opens when you post, lists every review you
+  posted, each comment marked *Waiting*, *Picked up* or *Resolved*, with your agent's replies
+  under it. It updates live as the agent works.
+- **Agent-agnostic:** reviews go through MCP, an open standard most coding agents support.
 
 Review state lives in `~/.local/share/agent-review/`, never inside your repository.
 
@@ -106,8 +106,7 @@ Review state lives in `~/.local/share/agent-review/`, never inside your reposito
 | Ctrl+Enter / Esc | Add the drawing to the review / throw it away |
 | Alt+↑ / Alt+↓ | Previous / next file |
 | Ctrl+Shift+A | Mark the file as reviewed |
-| Ctrl+Shift+P | Post review |
-| Ctrl+Shift+C | Copy feedback |
+| Ctrl+Shift+P | Post review, or approve |
 | Ctrl+Shift+R | Posted reviews |
 
 ## Installation
@@ -200,9 +199,16 @@ standard agents folder (`~/.agents/skills`), or in a folder you choose, and keep
 there whenever Agent Review starts.
 
 Then ask your agent to build something, or to get a colleague's pull request ready for you to
-review. The server gives the agent three tools: `request_review` asks you to review the commit
-checked out, `get_review` returns your open comments, with the screenshots you drew on, and
-`resolve_comments` marks the ones it has dealt with, which you see in *Posted reviews*.
+review. The server gives the agent four tools: `request_review` asks you to review the commit
+checked out, either its running product or only its code, `get_review` returns your open
+comments, with the screenshots you drew on, and your approvals, `reply_to_comments` answers
+your comments, and `resolve_comments` marks the ones it has dealt with. You see both in
+*Posted reviews*.
+
+Agents that can run a command in the background and be told when it ends, such as Claude Code,
+can also hear about your review the moment you post it, so the conversation carries on without
+you asking: after requesting a review, the agent runs `agent-review --wait`, which ends as soon
+as you post a review or approve the work.
 
 ## Development
 
@@ -248,16 +254,17 @@ src/
     diff.rs       unified diff parser, fingerprints, line snippets
     split.rs      side-by-side pairing and wrapping of diff lines
     review.rs     comments, line-range anchors and reviewed state
-    feedback.rs   Markdown prompt generation
-    queue.rs      posted reviews and the agent's progress on them
+    feedback.rs   comments as Markdown for the agent
+    queue.rs      posted reviews and approvals, and the agent's progress and replies
     mcp.rs        MCP server (`agent-review --mcp`) agents pull reviews from
+    wait.rs       `agent-review --wait`, which ends when the user posts a review
     watcher.rs    inotify watchers for the repository and the review queue
     store.rs      settings and review persistence (XDG directories)
     update.rs     update checks, and updating by running scripts/update.sh from the main branch
   ui/           GTK widgets
     window.rs     main window, actions and state
     diff_view.rs  GtkSourceView diff with inline comment threads
-    reviews_dialog.rs  posted reviews and their status
+    reviews_panel.rs   posted reviews, their status and the agent's replies
     commit_picker.rs   the commit history, to pick a commit to review
     file_list.rs, project_switcher.rs
 data/           desktop entry, AppStream metadata, icons (the app's, and Phosphor's for the

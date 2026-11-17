@@ -7,7 +7,7 @@ mod highlight;
 mod product_view;
 mod project_switcher;
 mod review_panel;
-mod reviews_dialog;
+mod reviews_panel;
 mod scroller;
 mod skill_dialog;
 mod util;

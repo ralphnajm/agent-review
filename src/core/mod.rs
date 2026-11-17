@@ -14,6 +14,7 @@ pub mod skill;
 pub mod split;
 pub mod store;
 pub mod update;
+pub mod wait;
 pub mod watcher;
 
 /// Current time as Unix milliseconds.

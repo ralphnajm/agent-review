@@ -140,6 +140,10 @@ button.description-toggle { min-height: 20px; padding: 0 6px; border-radius: 6px
 
 /* ----- Main area ----- */
 .main-area { background: @view_bg_color; }
+/* The posted reviews, beside the diff or the product. */
+.reviews-panel { background: @sidebar_bg_color; border-left: 1px solid alpha(currentColor, 0.1); }
+.reviews-header { min-height: 36px; padding: 0 6px 0 12px; }
+.reply-body { font-size: 0.95em; }
 /* One section per file; its header sticks to the top while the diff scrolls past. */
 filesection { border-bottom: 1px solid alpha(currentColor, 0.1); }
 .file-header {

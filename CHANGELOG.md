@@ -5,6 +5,35 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.8] - 2026-11-17
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Added
+
+- **Approve:** with no comments to post, the button at the top right approves the work instead of posting a review,
+  and your agent hears about it like a review.
+- Your agent can pick up your review the moment you post it, without you asking: after asking you for a review, an
+  agent that can run commands in the background waits for it with `agent-review --wait`, which ends when you post.
+- Your agent can reply to your comments: to say what it changed, answer a question or explain why it disagrees. The
+  replies show under your comments in Posted Reviews.
+- Your agent says whether a version is for you to review in the running product or only as code. A code-only review
+  opens straight on the code, without the product.
+
+### Changed
+
+- Posted Reviews is a panel on the right instead of a dialog. It opens when you post a review or approve, so you can
+  follow your agent's progress beside the code or the product. Ctrl+Shift+R, or Posted Reviews in the main menu,
+  shows or hides it.
+
+### Fixed
+
+- The window can shrink again after you sent comments on a file: their history above the diff kept it at its widest.
+
+### Removed
+
+- **Copy Feedback:** your review reaches your agent through the MCP server.
+
 ## [1.0.0-alpha.7] - 2026-10-28
 
 A pre-release: Check for Updates offers it on the **Pre-releases** channel.

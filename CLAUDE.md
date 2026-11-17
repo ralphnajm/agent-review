@@ -25,8 +25,8 @@ The agent skill in `skills/agent-review/SKILL.md` (installed with `npx skills ad
 ## Conventions
 
 - Keep `src/core/` free of GTK so it stays unit-testable; UI code goes in `src/ui/`.
-- Feedback reaches the agent only through the clipboard or the MCP server (`agent-review --mcp`, `src/core/mcp.rs`), which the agent pulls from: no terminal launching or agent-specific integration. Keep user-facing text agent-neutral.
-- The app and the MCP server share the review queue on disk (`src/core/queue.rs`). Keep one writer per file: the app writes posted reviews, the server writes progress and review requests.
+- Feedback reaches the agent only through the MCP server (`agent-review --mcp`, `src/core/mcp.rs`), which the agent pulls from, after `agent-review --wait` (`src/core/wait.rs`) tells it a review was posted if it runs that in the background: no terminal launching or agent-specific integration. Keep user-facing text agent-neutral.
+- The app and the MCP server share the review queue on disk (`src/core/queue.rs`). Keep one writer per file: the app writes posted reviews and approvals, the server writes progress (replies included) and review requests; `--wait` only reads.
 - Git is accessed through the `git` CLI with `--no-optional-locks` so refreshes never touch the index (which would retrigger the watcher).
 - Review state is stored under XDG data dirs, never in the reviewed repository.
 - Target GTK 4.14 / libadwaita 1.5 / GtkSourceView 5.12 / WebKitGTK 2.44 (Ubuntu 24.04); don't enable newer feature flags.

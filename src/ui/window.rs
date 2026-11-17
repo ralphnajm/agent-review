@@ -22,7 +22,7 @@ use gtk::{gio, glib};
 use crate::config;
 use crate::core::changes::ChangedFile;
 use crate::core::diff::FileDiff;
-use crate::core::feedback::{self, Feedback, FileInfo, Options};
+use crate::core::feedback;
 use crate::core::git::{Commit, Repo, Snapshot, Target};
 use crate::core::queue::{self, PostedComment, Queue, ReviewRequest};
 use crate::core::review::{ApprovalState, Author, LineAnchor, ReviewState, ReviewedCommit};
@@ -35,7 +35,7 @@ use crate::ui::file_list::{FileItem, FileList};
 use crate::ui::product_view::ProductView;
 use crate::ui::project_switcher::ProjectSwitcher;
 use crate::ui::review_panel::{FileData, ReviewPanel};
-use crate::ui::reviews_dialog::ReviewsDialog;
+use crate::ui::reviews_panel::ReviewsPanel;
 use crate::ui::skill_dialog::SkillDialog;
 use crate::ui::util;
 
@@ -67,8 +67,12 @@ struct Widgets {
     product: ProductView,
     review_actions: gtk::Box,
     progress: gtk::Label,
+    /// Posts the review, or approves the work when there are no comments.
+    post_button: gtk::Button,
+    post_label: gtk::Label,
     post_count: gtk::Label,
-    reviews_dialog: ReviewsDialog,
+    /// The posted reviews and the agent's progress on them, on the right.
+    reviews: ReviewsPanel,
     skill_dialog: SkillDialog,
     error_page: adw::StatusPage,
     /// Shown when what is under review changes no files.
@@ -128,6 +132,11 @@ impl Project {
     /// Where the product of the commit under review runs.
     fn url(&self) -> Option<&str> {
         self.request()?.url.as_deref()
+    }
+
+    /// Where the product to review runs, unless the review is of the code only.
+    fn product_url(&self) -> Option<&str> {
+        self.request()?.product_url()
     }
 
     fn review_key(&self) -> Option<ReviewKey> {
@@ -272,8 +281,16 @@ impl Window {
         self.add_action("comment-file", |w| w.open_composer(false));
         self.add_action("find", |w| w.0.w.review.start_search());
         self.add_action("post-review", Self::post_review);
-        self.add_action("copy-feedback", Self::copy_feedback);
-        self.add_action("show-reviews", Self::show_reviews);
+        let show_reviews = gio::PropertyAction::new("show-reviews", self.0.w.reviews.widget(), "visible");
+        self.0.w.window.add_action(&show_reviews);
+        let weak = self.weak();
+        self.0.w.reviews.widget().connect_visible_notify(move |panel| {
+            if panel.is_visible()
+                && let Some(inner) = weak.upgrade()
+            {
+                Self(inner).update_reviews_panel();
+            }
+        });
         self.add_action("focus-search", |w| {
             w.0.w.sidebar.set_visible(true);
             w.0.w.search.grab_focus();
@@ -322,7 +339,6 @@ impl Window {
             ("win.reviewed", &["<Control><Shift>a"]),
             ("win.comment", &["<Control>m"]),
             ("win.post-review", &["<Control><Shift>p"]),
-            ("win.copy-feedback", &["<Control><Shift>c"]),
             ("win.show-reviews", &["<Control><Shift>r"]),
             ("win.find", &["<Control>f"]),
             ("win.focus-search", &["<Control><Shift>f"]),
@@ -339,17 +355,8 @@ impl Window {
             let state = self.0.state.borrow();
             (state.project.is_some(), state.project.is_some() && state.selected.is_some(), state.product)
         };
-        for name in [
-            "refresh",
-            "next-file",
-            "prev-file",
-            "post-review",
-            "copy-feedback",
-            "show-reviews",
-            "clear-review",
-            "focus-search",
-            "show-commits",
-        ] {
+        for name in ["refresh", "next-file", "prev-file", "post-review", "clear-review", "focus-search", "show-commits"]
+        {
             self.set_action_enabled(name, has_project);
         }
         for name in ["reviewed", "find"] {
@@ -654,8 +661,8 @@ impl Window {
         }
         self.render_source();
         self.render_toolbar();
-        if self.0.w.reviews_dialog.is_open() {
-            self.update_reviews_dialog();
+        if self.0.w.reviews.widget().is_visible() {
+            self.update_reviews_panel();
         }
     }
 
@@ -866,6 +873,13 @@ impl Window {
         let unsent = project.review.unsent();
         w.post_count.set_text(&unsent.to_string());
         w.post_count.set_visible(unsent > 0);
+        if unsent > 0 {
+            w.post_label.set_text("Post Review");
+            w.post_button.set_tooltip_text(Some("Post your comments for your agent to pull (Ctrl+Shift+P)"));
+        } else {
+            w.post_label.set_text("Approve");
+            w.post_button.set_tooltip_text(Some("Approve the work: it needs no changes (Ctrl+Shift+P)"));
+        }
     }
 
     fn render_content(&self) {
@@ -881,7 +895,7 @@ impl Window {
             }
             return;
         };
-        w.view_switch.set_visible(project.url().is_some());
+        w.view_switch.set_visible(project.product_url().is_some());
         if state.product {
             w.content_stack.set_visible_child_name("product");
             return;
@@ -939,7 +953,7 @@ impl Window {
     fn show_product(&self, product: bool) {
         {
             let mut state = self.0.state.borrow_mut();
-            let has_product = state.project.as_ref().and_then(Project::url).is_some();
+            let has_product = state.project.as_ref().and_then(Project::product_url).is_some();
             state.product = product && has_product;
         }
         self.sync_view_action();
@@ -1046,7 +1060,7 @@ impl Window {
             project.snapshot = Snapshot::default();
             project.fingerprints.clear();
             project.loaded = false;
-            let url = project.url().map(str::to_owned);
+            let url = project.product_url().map(str::to_owned);
             state.generation += 1;
             state.selected = None;
             // A commit's running product comes first.
@@ -1211,38 +1225,10 @@ impl Window {
         dialog.present(Some(&self.0.w.window));
     }
 
-    // ----- Feedback ------------------------------------------------------
+    // ----- Posting -------------------------------------------------------
 
-    /// Feedback on the unsent comments and the reviewed files.
-    fn feedback(&self) -> Option<Feedback> {
-        let state = self.0.state.borrow();
-        let project = state.project.as_ref()?;
-        project.target.as_ref()?;
-        let files: Vec<FileInfo<'_>> = project
-            .snapshot
-            .files
-            .iter()
-            .map(|f| FileInfo {
-                path: &f.path,
-                diff: project.snapshot.diffs.get(&f.path),
-                approval: project.approval(&f.path),
-            })
-            .collect();
-        let options = Options { commit: project.reviewed_commit(), ..Options::default() };
-        Some(feedback::build(&project.review, &files, &options))
-    }
-
-    fn copy_feedback(&self) {
-        let Some(feedback) = self.feedback() else { return };
-        if feedback.is_empty() {
-            self.toast("Nothing to copy yet: comment on or review some files first");
-            return;
-        }
-        self.0.w.window.clipboard().set_text(&feedback.text);
-        self.mark_sent(feedback.note_ids);
-    }
-
-    /// Queues the unsent comments for the agent to pull through the MCP server.
+    /// Queues the unsent comments for the agent to pull through the MCP
+    /// server, or without any, the user's approval.
     fn post_review(&self) {
         // A drawing in progress is part of the review.
         let weak = self.weak();
@@ -1254,10 +1240,14 @@ impl Window {
     }
 
     fn post_unsent(&self) {
-        let Some(feedback) = self.feedback() else { return };
-        let ids = feedback.note_ids;
+        let ids = {
+            let state = self.0.state.borrow();
+            let Some(project) = state.project.as_ref().filter(|p| p.target.is_some()) else { return };
+            let files: Vec<&str> = project.snapshot.files.iter().map(|f| f.path.as_str()).collect();
+            feedback::unsent_order(&project.review, &files)
+        };
         if ids.is_empty() {
-            self.toast("Nothing to post yet: comment on some lines or files first");
+            self.approve();
             return;
         }
         let (posted, key, queue) = {
@@ -1302,16 +1292,47 @@ impl Window {
             }
         };
         self.render();
+        self.posted_toast("Review posted for your agent", queue, review.id, key, ids);
+    }
 
-        let toast = adw::Toast::builder()
-            .title("Review posted. Ask your agent to pull it")
-            .button_label("Undo")
-            .timeout(5)
-            .build();
+    /// Posts the user's approval of what is under review.
+    fn approve(&self) {
+        let (approved, key, queue) = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            if project.loaded && project.snapshot.files.is_empty() {
+                drop(state);
+                self.toast("Nothing to approve: there are no changes");
+                return;
+            }
+            let approved = project.queue.approve(project.reviewed_commit(), app_core::now());
+            if approved.is_ok() {
+                project.posted = project.queue.load();
+            }
+            (approved, project.review_key(), project.queue.clone())
+        };
+        let Some(key) = key else { return };
+        let approval = match approved {
+            Ok(approval) => approval,
+            Err(err) => {
+                self.toast(&format!("Could not approve: {err}"));
+                return;
+            }
+        };
+        self.render();
+        self.posted_toast("Approved. Your agent hears about it when it pulls", queue, approval.id, key, Vec::new());
+    }
+
+    /// Confirms a posted review or approval, offering to take it back, and
+    /// shows the posted reviews to follow the agent's progress.
+    fn posted_toast(&self, title: &str, queue: Queue, id: u64, key: ReviewKey, note_ids: Vec<u64>) {
+        self.0.w.reviews.widget().set_visible(true);
+        self.update_reviews_panel();
+        let toast = adw::Toast::builder().title(title).button_label("Undo").timeout(5).build();
         let weak = self.weak();
         toast.connect_button_clicked(move |_| {
             let Some(inner) = weak.upgrade() else { return };
-            Self(inner).withdraw_review(&queue, review.id, &key, &ids);
+            Self(inner).withdraw_review(&queue, id, &key, &note_ids);
         });
         self.0.w.toasts.add_toast(toast);
     }
@@ -1326,40 +1347,15 @@ impl Window {
                 }
                 self.render();
             }
-            Ok(false) => self.toast("Your agent has already pulled this review"),
+            Ok(false) => self.toast("Your agent has already pulled it"),
             Err(err) => self.toast(&format!("Could not take the review back: {err}")),
         }
     }
 
-    fn show_reviews(&self) {
-        self.update_reviews_dialog();
-        self.0.w.reviews_dialog.present(&self.0.w.window);
-    }
-
-    fn update_reviews_dialog(&self) {
+    fn update_reviews_panel(&self) {
         let state = self.0.state.borrow();
         let posted = state.project.as_ref().map_or(&[][..], |p| &p.posted);
-        self.0.w.reviews_dialog.set_entries(posted, app_core::now());
-    }
-
-    /// Marks copied comments as sent and confirms with an undoable toast.
-    fn mark_sent(&self, ids: Vec<u64>) {
-        let Some(key) = self.0.state.borrow().project.as_ref().and_then(Project::review_key) else { return };
-        self.edit_review(&key, |review| review.set_sent(&ids, Some(app_core::now())));
-        self.render();
-
-        let toast = adw::Toast::builder().title("Feedback copied. Paste it into your agent").timeout(5).build();
-        if !ids.is_empty() {
-            toast.set_button_label(Some("Mark Unsent"));
-            let weak = self.weak();
-            toast.connect_button_clicked(move |_| {
-                let Some(inner) = weak.upgrade() else { return };
-                let this = Self(inner);
-                this.edit_review(&key, |review| review.set_sent(&ids, None));
-                this.render();
-            });
-        }
-        self.0.w.toasts.add_toast(toast);
+        self.0.w.reviews.set_entries(posted, app_core::now());
     }
 
     // ----- Updates -------------------------------------------------------
@@ -1596,18 +1592,11 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     let post_count = gtk::Label::new(None);
     post_count.add_css_class("count-badge");
     post_count.set_valign(gtk::Align::Center);
+    let post_label = gtk::Label::new(Some("Approve"));
     let post_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    post_content.append(&gtk::Label::new(Some("Post Review")));
+    post_content.append(&post_label);
     post_content.append(&post_count);
-    let post_menu = gio::Menu::new();
-    post_menu.append(Some("Copy Feedback Instead"), Some("win.copy-feedback"));
-    let post_button = adw::SplitButton::builder()
-        .child(&post_content)
-        .menu_model(&post_menu)
-        .tooltip_text("Post unsent comments for your agent to pull (Ctrl+Shift+P)")
-        .dropdown_tooltip("More Ways to Send")
-        .action_name("win.post-review")
-        .build();
+    let post_button = gtk::Button::builder().child(&post_content).action_name("win.post-review").build();
     post_button.add_css_class("suggested-action");
     post_button.add_css_class("toolbar-button");
 
@@ -1791,9 +1780,12 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     let product = ProductView::new();
     content_stack.add_named(product.widget(), Some("product"));
 
-    let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let reviews = ReviewsPanel::new();
+    content_stack.set_hexpand(true);
+    let main = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     main.add_css_class("main-area");
     main.append(&content_stack);
+    main.append(reviews.widget());
 
     let paned = gtk::Paned::builder()
         .start_child(&sidebar)
@@ -1844,8 +1836,10 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
         product,
         review_actions,
         progress,
+        post_button,
+        post_label,
         post_count,
-        reviews_dialog: ReviewsDialog::new(),
+        reviews,
         skill_dialog: SkillDialog::new(),
         error_page,
         clean_page,

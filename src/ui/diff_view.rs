@@ -2061,8 +2061,9 @@ fn build_history() -> History {
     content.set_margin_bottom(12);
     content.append(&heading);
     content.append(&list);
+    // Sized to the code by `relayout`: its width must not hold the window wide when the code narrows.
     let scroller = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
+        .hscrollbar_policy(gtk::PolicyType::External)
         .max_content_height(320)
         .propagate_natural_height(true)
         .child(&content)

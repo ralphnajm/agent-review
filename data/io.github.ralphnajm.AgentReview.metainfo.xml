@@ -9,8 +9,8 @@
     <p>
       Agent Review is where you review what your coding agent built. When it finishes, it asks you
       to review that version: you click through the running product, draw on screenshots of what
-      needs changing, read the code changes, and hand the feedback back to the agent: post it for
-      the agent to pull through MCP, or copy it to paste.
+      needs changing, read the code changes, and post your review, or approve the work, for the
+      agent to pull through MCP.
     </p>
     <ul>
       <li>Switch between projects at any time</li>
@@ -18,8 +18,8 @@
       <li>Draw on screenshots with a marker, arrows, boxes, sticky notes and text</li>
       <li>Read the code changes with syntax highlighting, and comment on lines and files</li>
       <li>Review a colleague's commit or pull request the same way, through your agent</li>
-      <li>Post your review for your agent to pull, and see which comments it has resolved</li>
-      <li>Or copy your feedback as Markdown, ready to paste into your agent</li>
+      <li>Post your review for your agent to pull, or approve the work</li>
+      <li>Follow which comments your agent has resolved, and read its replies</li>
     </ul>
   </description>
   <launchable type="desktop-id">io.github.ralphnajm.AgentReview.desktop</launchable>
@@ -39,6 +39,7 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="1.0.0-alpha.8" date="2026-11-17" type="development"/>
     <release version="1.0.0-alpha.7" date="2026-10-28" type="development"/>
     <release version="1.0.0-alpha.6" date="2026-10-21" type="development"/>
     <release version="1.0.0-alpha.5" date="2026-10-21" type="development"/>
