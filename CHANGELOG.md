@@ -5,6 +5,18 @@ All notable changes to Agent Review are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Each version's section becomes the
 notes of its GitHub release.
 
+## [1.0.0-alpha.9] - 2026-11-17
+
+A pre-release: Check for Updates offers it on the **Pre-releases** channel.
+
+### Changed
+
+- **Posted Reviews** leads each comment with what you wrote, its file and lines above it in small print, and shows a
+  preview of the code it covers. Each review is headed by the commit it is on, then when you posted it and how many of
+  its comments are resolved.
+- **Clear Review** is gone from the main menu. Instead, **Dismiss** next to a posted review takes it back: your agent no
+  longer sees it, and its comments are deleted.
+
 ## [1.0.0-alpha.8] - 2026-11-17
 
 A pre-release: Check for Updates offers it on the **Pre-releases** channel.

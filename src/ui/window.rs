@@ -299,7 +299,14 @@ impl Window {
             let sidebar = &w.0.w.sidebar;
             sidebar.set_visible(!sidebar.is_visible());
         });
-        self.add_action("clear-review", Self::confirm_clear_review);
+        let dismiss = gio::SimpleAction::new("dismiss-review", Some(glib::VariantTy::UINT64));
+        let weak = self.weak();
+        dismiss.connect_activate(move |_, id| {
+            if let (Some(inner), Some(id)) = (weak.upgrade(), id.and_then(u64::from_variant)) {
+                Self(inner).confirm_dismiss_review(id);
+            }
+        });
+        self.0.w.window.add_action(&dismiss);
         self.add_action("show-commits", |w| w.0.w.commits.popup());
         self.add_action("check-updates", Self::check_for_updates);
         self.add_action("install-skill", |w| w.0.w.skill_dialog.present(&w.0.w.window));
@@ -355,8 +362,7 @@ impl Window {
             let state = self.0.state.borrow();
             (state.project.is_some(), state.project.is_some() && state.selected.is_some(), state.product)
         };
-        for name in ["refresh", "next-file", "prev-file", "post-review", "clear-review", "focus-search", "show-commits"]
-        {
+        for name in ["refresh", "next-file", "prev-file", "post-review", "focus-search", "show-commits"] {
             self.set_action_enabled(name, has_project);
         }
         for name in ["reviewed", "find"] {
@@ -1197,32 +1203,59 @@ impl Window {
         }
     }
 
-    fn confirm_clear_review(&self) {
-        let body = match self.0.state.borrow().project.as_ref().and_then(|p| p.target.as_ref()) {
-            Some(Target::Commit(_)) => "All approvals and comments on this commit will be deleted.",
-            Some(Target::Worktree) => "All approvals and comments on the uncommitted changes will be deleted.",
-            None => return,
+    /// Asks before dismissing posted review `id`: the agent no longer sees
+    /// it, and its comments are deleted.
+    fn confirm_dismiss_review(&self, id: u64) {
+        let approved = {
+            let state = self.0.state.borrow();
+            let Some(entry) = state.project.as_ref().and_then(|p| p.posted.iter().find(|e| e.review.id == id)) else {
+                return;
+            };
+            entry.review.approved
         };
-        let dialog = adw::AlertDialog::new(Some("Clear Review?"), Some(body));
-        dialog.add_responses(&[("cancel", "_Cancel"), ("clear", "_Clear Review")]);
-        dialog.set_response_appearance("clear", adw::ResponseAppearance::Destructive);
+        let body = if approved {
+            "Your agent will no longer see this approval."
+        } else {
+            "Your agent will no longer see this review, and its comments will be deleted."
+        };
+        let dialog = adw::AlertDialog::new(Some("Dismiss Review?"), Some(body));
+        dialog.add_responses(&[("cancel", "_Cancel"), ("dismiss", "_Dismiss")]);
+        dialog.set_response_appearance("dismiss", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
         let weak = self.weak();
         dialog.connect_response(None, move |_, response| {
-            if response != "clear" {
-                return;
+            if response == "dismiss"
+                && let Some(inner) = weak.upgrade()
+            {
+                Self(inner).dismiss_review(id);
             }
-            let Some(inner) = weak.upgrade() else { return };
-            let this = Self(inner);
-            if let Some(project) = this.0.state.borrow_mut().project.as_mut() {
-                project.review.clear();
-                project.save_review();
-                project.update_checked();
-            }
-            this.render();
         });
         dialog.present(Some(&self.0.w.window));
+    }
+
+    fn dismiss_review(&self, id: u64) {
+        let (dismissed, path) = {
+            let mut state = self.0.state.borrow_mut();
+            let Some(project) = state.project.as_mut() else { return };
+            let dismissed = project.queue.dismiss(id);
+            project.posted = project.queue.load();
+            (dismissed, project.repo.path())
+        };
+        match dismissed {
+            Ok(Some(review)) => {
+                let key = review.commit.as_ref().map_or_else(|| store::WORKTREE_KEY.to_owned(), |c| c.id.clone());
+                let note_ids: Vec<u64> = review.comments.iter().map(|c| c.note_id).collect();
+                self.edit_review(&ReviewKey { path, key }, |r| r.remove_notes(&note_ids));
+                if let Some(project) = self.0.state.borrow_mut().project.as_mut() {
+                    project.update_checked();
+                }
+            }
+            Ok(None) => {}
+            Err(err) => self.toast(&format!("Could not dismiss the review: {err}")),
+        }
+        self.render();
+        self.update_reviews_panel();
     }
 
     // ----- Posting -------------------------------------------------------
@@ -1615,7 +1648,6 @@ fn build_widgets(app: &adw::Application, settings: &Settings) -> Widgets {
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
     section.append(Some("Posted Reviews"), Some("win.show-reviews"));
-    section.append(Some("Clear Review…"), Some("win.clear-review"));
     main_menu.append_section(None, &section);
     let section = gio::Menu::new();
     section.append(Some("Keyboard Shortcuts"), Some("win.show-help-overlay"));

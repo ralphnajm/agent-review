@@ -248,6 +248,14 @@ impl Queue {
         Ok(true)
     }
 
+    /// Dismisses review `id`, pulled or not: the agent no longer sees it.
+    /// Returns the review, if it was still there.
+    pub fn dismiss(&self, id: u64) -> std::io::Result<Option<PostedReview>> {
+        let Some(review) = store::read_json::<PostedReview>(&self.review_file(id)) else { return Ok(None) };
+        std::fs::remove_file(self.review_file(id))?;
+        Ok(Some(review))
+    }
+
     /// Records that the agent pulled the reviews with the given ids.
     pub fn mark_pulled(&self, ids: &[u64], now: i64) -> std::io::Result<()> {
         for &id in ids {
@@ -472,5 +480,19 @@ mod tests {
         assert!(!queue.withdraw(second.id).unwrap());
         let left: Vec<u64> = queue.load().iter().map(|e| e.review.id).collect();
         assert_eq!(left, [second.id]);
+    }
+
+    #[test]
+    fn dismisses_reviews_the_agent_has_pulled() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = Queue::at(dir.path().to_path_buf());
+        let first = queue.post(None, [comment(1, "One")], 1).unwrap();
+        let second = queue.post(None, [comment(2, "Two")], 2).unwrap();
+        queue.mark_pulled(&[first.id], 3).unwrap();
+        assert_eq!(queue.dismiss(first.id).unwrap(), Some(first.clone()));
+        assert_eq!(queue.dismiss(first.id).unwrap(), None);
+        let left: Vec<u64> = queue.load().iter().map(|e| e.review.id).collect();
+        assert_eq!(left, [second.id]);
+        assert_eq!(queue.resolve(&[first.comments[0].id], 4).unwrap(), Vec::<u64>::new());
     }
 }

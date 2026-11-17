@@ -144,6 +144,21 @@ button.description-toggle { min-height: 20px; padding: 0 6px; border-radius: 6px
 .reviews-panel { background: @sidebar_bg_color; border-left: 1px solid alpha(currentColor, 0.1); }
 .reviews-header { min-height: 36px; padding: 0 6px 0 12px; }
 .reply-body { font-size: 0.95em; }
+.reviews-comment-body { line-height: 1.35; }
+/* The code a posted comment covers. */
+.reviews-snippet {
+  font-family: monospace;
+  font-size: 0.8em;
+  padding: 4px 0;
+  border-radius: 6px;
+  background: alpha(currentColor, 0.05);
+}
+.reviews-snippet > label { padding: 0 8px; }
+.reviews-snippet > .added { background: alpha(@success_color, 0.12); }
+.reviews-snippet > .removed { background: alpha(@error_color, 0.12); }
+.reviews-snippet > .context, .reviews-snippet > .more { color: alpha(currentColor, 0.7); }
+.reviews-snippet > .more { font-family: sans-serif; font-style: italic; padding-top: 2px; }
+.reviews-reply { padding-left: 10px; border-left: 2px solid alpha(@accent_color, 0.5); }
 /* One section per file; its header sticks to the top while the diff scrolls past. */
 filesection { border-bottom: 1px solid alpha(currentColor, 0.1); }
 .file-header {

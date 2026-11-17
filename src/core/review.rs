@@ -258,9 +258,16 @@ impl ReviewState {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.files.clear();
-        self.product.clear();
+    /// Removes the notes with the given ids, wherever they are.
+    pub fn remove_notes(&mut self, ids: &[u64]) {
+        self.product.retain(|n| !ids.contains(&n.id));
+        let paths: Vec<String> = self.files.keys().cloned().collect();
+        for path in paths {
+            if let Some(file) = self.files.get_mut(&path) {
+                file.notes.retain(|n| !ids.contains(&n.id));
+            }
+            self.prune(&path);
+        }
     }
 
     fn prune(&mut self, path: &str) {
@@ -341,7 +348,7 @@ mod tests {
 
         let json = serde_json::to_string(&review).unwrap();
         assert_eq!(serde_json::from_str::<ReviewState>(&json).unwrap(), review);
-        review.clear();
+        review.remove_notes(&[file, page]);
         assert_eq!(review, ReviewState { next_id: review.next_id, ..ReviewState::default() });
     }
 }
